@@ -1,0 +1,121 @@
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes: light --default, dark --prefersdark;
+}
+
+@layer base {
+  :root {
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI", "Segoe UI", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  [data-theme="light"] {
+    --color-base-100: #ffffff;
+    --color-base-200: #f6f6f4;
+    --color-base-300: #e8e8e4;
+    --color-base-content: #18181b;
+    --color-primary: #2563eb;
+    --color-primary-content: #ffffff;
+    --color-secondary: #52525b;
+    --color-secondary-content: #ffffff;
+    --color-accent: #0f766e;
+    --color-accent-content: #ffffff;
+    --color-neutral: #27272a;
+    --color-neutral-content: #fafafa;
+    --color-info: #0284c7;
+    --color-success: #059669;
+    --color-warning: #d97706;
+    --color-error: #dc2626;
+  }
+
+  [data-theme="dark"] {
+    --color-base-100: #18181b;
+    --color-base-200: #121215;
+    --color-base-300: #27272a;
+    --color-base-content: #f4f4f5;
+    --color-primary: #60a5fa;
+    --color-primary-content: #09090b;
+    --color-secondary: #a1a1aa;
+    --color-secondary-content: #09090b;
+    --color-accent: #2dd4bf;
+    --color-accent-content: #09090b;
+    --color-neutral: #27272a;
+    --color-neutral-content: #f4f4f5;
+    --color-info: #38bdf8;
+    --color-success: #34d399;
+    --color-warning: #fbbf24;
+    --color-error: #f87171;
+  }
+
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  input, textarea, [contenteditable="true"] {
+    user-select: text;
+    -webkit-user-select: text;
+    -webkit-touch-callout: default;
+  }
+}
+
+/* 3D Book Flip Utilities */
+.book-perspective {
+  perspective: 2400px;
+}
+
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+.backface-hidden {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* Gutter / Spine realistic shadows */
+.spine-shadow-left {
+  background: linear-gradient(
+    to left,
+    rgba(15, 23, 42, 0.14) 0%,
+    rgba(15, 23, 42, 0.04) 10%,
+    transparent 26%
+  );
+}
+
+.spine-shadow-right {
+  background: linear-gradient(
+    to right,
+    rgba(15, 23, 42, 0.14) 0%,
+    rgba(15, 23, 42, 0.04) 10%,
+    transparent 26%
+  );
+}
+
+/* Spoiler blur for hints and compact answers */
+.spoiler-blur {
+  filter: blur(6px);
+  user-select: none;
+  transition: filter 180ms ease, opacity 180ms ease;
+}
+
+.spoiler-blur.revealed {
+  filter: blur(0);
+}
+
+/* Thin subtle scrollbar */
+.thin-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.thin-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 9999px;
+}
