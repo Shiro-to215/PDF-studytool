@@ -46,7 +46,8 @@ interface ToolStore {
   tool: DrawingTool;
   penColor: string;
   markerColor: string;
-  sizeIndex: 0 | 1 | 2;
+  penSizeIndex: 0 | 1 | 2;
+  markerSizeIndex: 0 | 1 | 2;
   activeLayer: string;
   hiddenLayers: string[];
   allInkHidden: boolean;
@@ -57,7 +58,8 @@ interface ToolStore {
   setTool: (tool: DrawingTool) => void;
   setPenColor: (color: string) => void;
   setMarkerColor: (color: string) => void;
-  setSizeIndex: (idx: 0 | 1 | 2) => void;
+  setPenSizeIndex: (idx: 0 | 1 | 2) => void;
+  setMarkerSizeIndex: (idx: 0 | 1 | 2) => void;
   setActiveLayer: (layer: string) => void;
   toggleLayerVisibility: (layer: string) => void;
   setAllInkHidden: (hidden: boolean) => void;
@@ -83,7 +85,8 @@ export const useToolStore = create<ToolStore>((set, get) => ({
   tool: 'pen',
   penColor: '#2563eb',
   markerColor: '#fde047',
-  sizeIndex: 1,
+  penSizeIndex: 1,
+  markerSizeIndex: 1,
   activeLayer: '1周目',
   hiddenLayers: [],
   allInkHidden: false,
@@ -95,7 +98,8 @@ export const useToolStore = create<ToolStore>((set, get) => ({
   setTool: (tool) => set({ tool }),
   setPenColor: (penColor) => set({ penColor, tool: 'pen' }),
   setMarkerColor: (markerColor) => set({ markerColor, tool: 'marker' }),
-  setSizeIndex: (sizeIndex) => set({ sizeIndex }),
+  setPenSizeIndex: (penSizeIndex) => set({ penSizeIndex }),
+  setMarkerSizeIndex: (markerSizeIndex) => set({ markerSizeIndex }),
   setActiveLayer: (activeLayer) =>
     set((s) => ({
       activeLayer,

@@ -103,7 +103,8 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       tool,
       penColor,
       markerColor,
-      sizeIndex,
+      penSizeIndex,
+      markerSizeIndex,
       activeLayer,
       hiddenLayers,
       allInkHidden,
@@ -937,10 +938,12 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         }
 
         clearHoldTimer();
-        const sizeSpec = SIZE_OPTIONS[sizeIndex];
         const drawTool: 'pen' | 'marker' = tool === 'marker' ? 'marker' : 'pen';
         const color = drawTool === 'marker' ? markerColor : penColor;
-        const size = drawTool === 'marker' ? sizeSpec.marker : sizeSpec.pen;
+        const size =
+          drawTool === 'marker'
+            ? SIZE_OPTIONS[markerSizeIndex].marker
+            : SIZE_OPTIONS[penSizeIndex].pen;
         const initialPoints: StrokePoint[] = [[pt.bx, pt.by, pressure || 0.5]];
 
         const session = {
@@ -963,7 +966,8 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         tool,
         eraseAtPoint,
         clearHoldTimer,
-        sizeIndex,
+        penSizeIndex,
+        markerSizeIndex,
         markerColor,
         penColor,
         buildDraftByPage,

@@ -218,7 +218,8 @@ export function FloatingToolPalette({
     tool,
     penColor,
     markerColor,
-    sizeIndex,
+    penSizeIndex,
+    markerSizeIndex,
     activeLayer,
     canUndo,
     canRedo,
@@ -226,7 +227,8 @@ export function FloatingToolPalette({
     setTool,
     setPenColor,
     setMarkerColor,
-    setSizeIndex,
+    setPenSizeIndex,
+    setMarkerSizeIndex,
   } = useToolStore();
 
   const {
@@ -243,9 +245,18 @@ export function FloatingToolPalette({
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [dragEndNonce, setDragEndNonce] = useState(0);
   const [boundsSize, setBoundsSize] = useState({ w: 800, h: 600 });
+  const [sizePopover, setSizePopover] = useState<{
+    tool: 'pen' | 'marker';
+    anchorX: number;
+    anchorY: number;
+    dock: DockEdge;
+  } | null>(null);
 
   const paletteElRef = useRef<HTMLDivElement | null>(null);
   const contentElRef = useRef<HTMLDivElement | null>(null);
+  const penBtnRef = useRef<HTMLButtonElement | null>(null);
+  const markerBtnRef = useRef<HTMLButtonElement | null>(null);
+  const sizePopoverRef = useRef<HTMLDivElement | null>(null);
   const safeBottomRef = useRef<HTMLDivElement | null>(null);
   const activeAnimsRef = useRef<Animation[]>([]);
   const flipOriginRef = useRef<{
@@ -292,6 +303,28 @@ export function FloatingToolPalette({
       activeAnimsRef.current = [];
     };
   }, []);
+
+  // Auto-close thickness popover when tapping outside or starting to draw on the PDF
+  useEffect(() => {
+    if (!sizePopover) return;
+    const handleOutside = (e: Event) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (sizePopoverRef.current?.contains(target)) return;
+      if (penBtnRef.current?.contains(target) || markerBtnRef.current?.contains(target)) return;
+      setSizePopover(null);
+    };
+    window.addEventListener('pointerdown', handleOutside, true);
+    window.addEventListener('touchstart', handleOutside, true);
+    return () => {
+      window.removeEventListener('pointerdown', handleOutside, true);
+      window.removeEventListener('touchstart', handleOutside, true);
+    };
+  }, [sizePopover]);
+
+  useEffect(() => {
+    setSizePopover(null);
+  }, [boundsSize, paletteState]);
 
   useEffect(() => {
     try {
@@ -596,6 +629,7 @@ export function FloatingToolPalette({
   const beginDrag = (e: ReactPointerEvent<HTMLElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.stopPropagation();
+    setSizePopover(null);
 
     const bounds = boundsRef.current?.getBoundingClientRect();
     const el = paletteElRef.current;
@@ -724,6 +758,7 @@ export function FloatingToolPalette({
   };
 
   const handleCollapseButton = () => {
+    setSizePopover(null);
     const r = paletteElRef.current?.getBoundingClientRect();
     if (r && r.width > 0) {
       flipOriginRef.current = {
@@ -746,7 +781,7 @@ export function FloatingToolPalette({
 
   const zoomResetLeftOffset =
     paletteState.collapsed && paletteState.corner === 'bottom-left'
-      ? 'left-[84px]'
+      ? 'left-[96px]'
       : 'left-3.5';
 
   const renderToolIcon = (sizeClass: string) => {
@@ -755,22 +790,84 @@ export function FloatingToolPalette({
     return <Pen className={sizeClass} />;
   };
 
+  const handleToolButtonClick = (
+    nextTool: 'pen' | 'marker' | 'eraser',
+    btnEl: HTMLButtonElement | null,
+  ) => {
+    if (nextTool === 'eraser') {
+      setTool('eraser');
+      setSizePopover(null);
+      return;
+    }
+
+    // 1st tap: switch tool normally without opening popover
+    if (tool !== nextTool) {
+      setTool(nextTool);
+      setSizePopover(null);
+      return;
+    }
+
+    // 2nd tap on already-selected pen/marker: toggle Freeform-style thickness popover
+    if (sizePopover?.tool === nextTool) {
+      setSizePopover(null);
+      return;
+    }
+
+    const boundsRect = boundsRef.current?.getBoundingClientRect();
+    const paletteRect = paletteElRef.current?.getBoundingClientRect();
+    const btnRect = btnEl?.getBoundingClientRect();
+    if (!boundsRect || !paletteRect || !btnRect) return;
+
+    const dock = paletteState.dock;
+    const gap = 12;
+    let anchorX = 0;
+    let anchorY = 0;
+
+    if (dock === 'bottom') {
+      anchorX = Math.max(
+        88,
+        Math.min(boundsRect.width - 88, btnRect.left + btnRect.width / 2 - boundsRect.left),
+      );
+      anchorY = paletteRect.top - boundsRect.top - gap;
+    } else if (dock === 'top') {
+      anchorX = Math.max(
+        88,
+        Math.min(boundsRect.width - 88, btnRect.left + btnRect.width / 2 - boundsRect.left),
+      );
+      anchorY = paletteRect.bottom - boundsRect.top + gap;
+    } else if (dock === 'left') {
+      anchorX = paletteRect.right - boundsRect.left + gap;
+      anchorY = Math.max(
+        40,
+        Math.min(boundsRect.height - 40, btnRect.top + btnRect.height / 2 - boundsRect.top),
+      );
+    } else {
+      anchorX = paletteRect.left - boundsRect.left - gap;
+      anchorY = Math.max(
+        40,
+        Math.min(boundsRect.height - 40, btnRect.top + btnRect.height / 2 - boundsRect.top),
+      );
+    }
+
+    setSizePopover({ tool: nextTool, anchorX, anchorY, dock });
+  };
+
   // Compute snap preview ghost coordinates in pixels (same transform system, zero conflict)
   const previewGhost = (() => {
     if (!isDraggingMoved || !dragState?.preview) return null;
     const p = dragState.preview;
     const gw =
       p.kind === 'corner'
-        ? 60
+        ? 72
         : p.edge === 'left' || p.edge === 'right'
-          ? 74
-          : Math.min(400, boundsSize.w - 32);
+          ? 92
+          : Math.min(440, boundsSize.w - 32);
     const gh =
       p.kind === 'corner'
-        ? 60
+        ? 72
         : p.edge === 'left' || p.edge === 'right'
-          ? Math.min(360, boundsSize.h - 32)
-          : 54;
+          ? Math.min(400, boundsSize.h - 32)
+          : 66;
     const pos = computeTargetPosition(p, gw, gh, boundsSize.w, boundsSize.h, getSafeBottom());
     return { w: gw, h: gh, x: pos.x, y: pos.y };
   })();
@@ -804,10 +901,10 @@ export function FloatingToolPalette({
           onTouchStart={(e) => e.stopPropagation()}
           onClick={resetZoom}
           title="タップして100%に戻す"
-          className={`absolute ${zoomResetLeftOffset} bottom-[calc(14px+env(safe-area-inset-bottom))] z-30 px-3 py-2 rounded-full bg-base-100/92 backdrop-blur-md border border-base-300 shadow-md flex items-center gap-1.5 text-xs font-mono text-base-content/85 hover:text-primary transition-all`}
+          className={`absolute ${zoomResetLeftOffset} bottom-[calc(14px+env(safe-area-inset-bottom))] z-30 px-3.5 py-2.5 rounded-full bg-base-100/92 backdrop-blur-md border border-base-300 shadow-md flex items-center gap-2 text-sm font-mono text-base-content/85 hover:text-primary transition-all`}
         >
           <span>{Math.round(scale * 100)}%</span>
-          <RotateCcw className="w-3.5 h-3.5 text-base-content/55" />
+          <RotateCcw className="w-4 h-4 text-base-content/55" />
         </button>
       )}
 
@@ -822,15 +919,15 @@ export function FloatingToolPalette({
           onTouchStart={(e) => e.stopPropagation()}
           style={{ touchAction: 'none', transformOrigin: 'center center' }}
           title="タップで展開 / ドラッグで移動"
-          className={`absolute top-0 left-0 z-30 w-[60px] h-[60px] rounded-full bg-base-100/95 backdrop-blur-md border border-base-300 shadow-lg flex items-center justify-center cursor-grab active:cursor-grabbing select-none will-change-transform ${
+          className={`absolute top-0 left-0 z-30 w-[72px] h-[72px] rounded-full bg-base-100/95 backdrop-blur-md border border-base-300 shadow-lg flex items-center justify-center cursor-grab active:cursor-grabbing select-none will-change-transform ${
             isDraggingMoved ? 'ring-2 ring-primary/30' : ''
           }`}
         >
           <div ref={contentElRef} className="relative flex items-center justify-center shrink-0">
-            {renderToolIcon('w-6 h-6 text-base-content/85')}
+            {renderToolIcon('w-7 h-7 text-base-content/85')}
             {tool !== 'eraser' && (
               <span
-                className="absolute -bottom-2.5 left-1/2 w-5 h-1.5 rounded-full ring-1 ring-black/15"
+                className="absolute -bottom-3 left-1/2 w-6 h-[7px] rounded-full ring-1 ring-black/15"
                 style={{ backgroundColor: activeColor, transform: 'translateX(-50%)' }}
               />
             )}
@@ -863,8 +960,8 @@ export function FloatingToolPalette({
             ref={contentElRef}
             className={
               isVertical
-                ? 'flex flex-col items-center gap-2 px-2.5 py-3 max-h-full overflow-y-auto thin-scrollbar'
-                : 'flex flex-row items-center gap-2 px-3.5 py-2 max-w-full overflow-x-auto thin-scrollbar'
+                ? 'flex flex-col items-center gap-2.5 px-3 py-3.5 max-h-full overflow-y-auto thin-scrollbar'
+                : 'flex flex-row items-center gap-2.5 px-4 py-2.5 max-w-full overflow-x-auto thin-scrollbar'
             }
           >
           {/* Drag Handle */}
@@ -873,120 +970,126 @@ export function FloatingToolPalette({
             title="ドラッグして上下左右へ移動 / 四隅で格納"
             style={{ touchAction: 'none', transformOrigin: 'center center' }}
             className={`flex items-center justify-center text-base-content/40 hover:text-base-content/75 cursor-grab active:cursor-grabbing shrink-0 ${
-              isVertical ? 'w-10 h-5' : 'w-5 h-9'
+              isVertical ? 'w-12 h-6' : 'w-6 h-11'
             }`}
           >
             {isVertical ? (
-              <GripHorizontal className="w-[18px] h-[18px]" />
+              <GripHorizontal className="w-[22px] h-[22px]" />
             ) : (
-              <GripVertical className="w-[18px] h-[18px]" />
+              <GripVertical className="w-[22px] h-[22px]" />
             )}
           </div>
 
-          {/* Interaction Mode: Flip vs Draw */}
+          {/* Interaction Mode: Flip vs Draw (icon-only for compact horizontal fit) */}
           <div
             className={`flex p-1 rounded-full bg-base-200 border border-base-300 shrink-0 ${
-              isVertical ? 'flex-col gap-1' : 'flex-row items-center gap-0.5'
+              isVertical ? 'flex-col gap-1' : 'flex-row items-center gap-1'
             }`}
           >
             <button
               type="button"
-              onClick={() => setInteractionMode('flip')}
-              title="指でページめくり（Apple Pencilは常に書き込み可）"
-              className={`rounded-full text-xs font-medium flex items-center justify-center gap-1.5 transition-colors ${
-                isVertical ? 'w-10 h-9' : 'px-3 py-1.5'
+              onClick={() => {
+                setInteractionMode('flip');
+                setSizePopover(null);
+              }}
+              title="めくり（Apple Pencilは常に書き込み可）"
+              className={`rounded-full flex items-center justify-center transition-colors ${
+                isVertical ? 'w-12 h-11' : 'w-11 h-11'
               } ${
                 interactionMode === 'flip'
                   ? 'bg-base-100 text-base-content shadow-xs'
                   : 'text-base-content/55 hover:text-base-content'
               }`}
             >
-              <BookOpen className="w-4 h-4" />
-              {!isVertical && <span className="hidden sm:inline">めくり</span>}
+              <BookOpen className="w-5 h-5" />
             </button>
             <button
               type="button"
-              onClick={() => setInteractionMode('draw')}
-              title="指/マウスでも直接書き込み"
-              className={`rounded-full text-xs font-medium flex items-center justify-center gap-1.5 transition-colors ${
-                isVertical ? 'w-10 h-9' : 'px-3 py-1.5'
+              onClick={() => {
+                setInteractionMode('draw');
+                setSizePopover(null);
+              }}
+              title="書く（指/マウスでも直接書き込み）"
+              className={`rounded-full flex items-center justify-center transition-colors ${
+                isVertical ? 'w-12 h-11' : 'w-11 h-11'
               } ${
                 interactionMode === 'draw'
                   ? 'bg-primary text-primary-content shadow-xs'
                   : 'text-base-content/55 hover:text-base-content'
               }`}
             >
-              <Pen className="w-4 h-4" />
-              {!isVertical && <span className="hidden sm:inline">書く</span>}
+              <Pen className="w-5 h-5" />
             </button>
           </div>
 
           <div
             className={
-              isVertical ? 'h-px w-8 bg-base-300 my-0.5 shrink-0' : 'w-px h-6 bg-base-300 mx-0.5 shrink-0'
+              isVertical ? 'h-px w-10 bg-base-300 my-0.5 shrink-0' : 'w-px h-7 bg-base-300 mx-0.5 shrink-0'
             }
           />
 
-          {/* Drawing Tools */}
+          {/* Drawing Tools (2nd tap on pen/marker opens thickness speech-bubble popover) */}
           <div
-            className={`flex items-center gap-1.5 shrink-0 ${
+            className={`flex items-center gap-2 shrink-0 ${
               isVertical ? 'flex-col' : 'flex-row'
             }`}
           >
             <button
+              ref={penBtnRef}
               type="button"
-              onClick={() => setTool('pen')}
-              className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
+              onClick={() => handleToolButtonClick('pen', penBtnRef.current)}
+              className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${
                 tool === 'pen'
                   ? 'bg-primary text-primary-content shadow-xs'
                   : 'hover:bg-base-200 text-base-content/75'
               }`}
-              title="ペン"
+              title="ペン（もう一度タップで太さ調整）"
             >
-              <Pen className="w-[18px] h-[18px]" />
+              <Pen className="w-[22px] h-[22px]" />
             </button>
             <button
+              ref={markerBtnRef}
               type="button"
-              onClick={() => setTool('marker')}
-              className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
+              onClick={() => handleToolButtonClick('marker', markerBtnRef.current)}
+              className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${
                 tool === 'marker'
                   ? 'bg-primary text-primary-content shadow-xs'
                   : 'hover:bg-base-200 text-base-content/75'
               }`}
-              title="蛍光マーカー"
+              title="蛍光マーカー（もう一度タップで太さ調整）"
             >
-              <Highlighter className="w-[18px] h-[18px]" />
+              <Highlighter className="w-[22px] h-[22px]" />
             </button>
             <button
               type="button"
-              onClick={() => setTool('eraser')}
-              className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
+              onClick={() => handleToolButtonClick('eraser', null)}
+              className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${
                 tool === 'eraser'
                   ? 'bg-primary text-primary-content shadow-xs'
                   : 'hover:bg-base-200 text-base-content/75'
               }`}
               title="消しゴム（ストローク単位）"
             >
-              <Eraser className="w-[18px] h-[18px]" />
+              <Eraser className="w-[22px] h-[22px]" />
             </button>
           </div>
 
-          {/* Color Swatches & Width */}
+          {/* Color Swatches */}
           {tool !== 'eraser' && (
             <>
               <div
                 className={
                   isVertical
-                    ? 'h-px w-8 bg-base-300 my-0.5 shrink-0'
-                    : 'w-px h-6 bg-base-300 mx-0.5 shrink-0'
+                    ? 'h-px w-10 bg-base-300 my-0.5 shrink-0'
+                    : 'w-px h-7 bg-base-300 mx-0.5 shrink-0'
                 }
               />
 
               <div
                 className={
                   isVertical
-                    ? 'grid grid-cols-2 gap-2 px-0.5 shrink-0'
-                    : 'flex items-center gap-2 px-1 shrink-0'
+                    ? 'grid grid-cols-2 gap-2.5 px-0.5 shrink-0'
+                    : 'flex items-center gap-2.5 px-1 shrink-0'
                 }
               >
                 {colorList.map((c) => {
@@ -997,10 +1100,11 @@ export function FloatingToolPalette({
                       type="button"
                       title={c.label}
                       onClick={() => {
+                        setSizePopover(null);
                         if (tool === 'marker') setMarkerColor(c.value);
                         else setPenColor(c.value);
                       }}
-                      className={`w-6 h-6 rounded-full transition-transform border border-black/15 ${
+                      className={`w-7 h-7 rounded-full transition-transform border border-black/15 ${
                         selected
                           ? 'ring-2 ring-primary ring-offset-2 ring-offset-base-100 scale-110'
                           : 'hover:scale-110'
@@ -1010,76 +1114,42 @@ export function FloatingToolPalette({
                   );
                 })}
               </div>
-
-              <div
-                className={
-                  isVertical
-                    ? 'h-px w-8 bg-base-300 my-0.5 shrink-0'
-                    : 'w-px h-6 bg-base-300 mx-0.5 shrink-0'
-                }
-              />
-
-              {/* Stroke Width */}
-              <div
-                className={`flex items-center shrink-0 ${
-                  isVertical ? 'gap-0.5' : 'gap-1 px-0.5'
-                }`}
-              >
-                {SIZE_OPTIONS.map((opt, idx) => {
-                  const dotPx = idx === 0 ? 6 : idx === 1 ? 10 : 14;
-                  const active = sizeIndex === idx;
-                  return (
-                    <button
-                      key={opt.label}
-                      type="button"
-                      title={`太さ：${opt.label}`}
-                      onClick={() => setSizeIndex(idx as 0 | 1 | 2)}
-                      className={`${
-                        isVertical ? 'w-6 h-7' : 'w-8 h-8'
-                      } rounded-full flex items-center justify-center transition-colors ${
-                        active ? 'bg-base-200 ring-1 ring-base-300' : 'hover:bg-base-200/70'
-                      }`}
-                    >
-                      <span
-                        className="rounded-full bg-base-content/80 block"
-                        style={{ width: dotPx, height: dotPx }}
-                      />
-                    </button>
-                  );
-                })}
-              </div>
             </>
           )}
 
           <div
             className={
-              isVertical ? 'h-px w-8 bg-base-300 my-0.5 shrink-0' : 'w-px h-6 bg-base-300 mx-0.5 shrink-0'
+              isVertical ? 'h-px w-10 bg-base-300 my-0.5 shrink-0' : 'w-px h-7 bg-base-300 mx-0.5 shrink-0'
             }
           />
 
           {/* Undo / Redo */}
           <div
             className={
-              isVertical ? 'grid grid-cols-2 gap-1 shrink-0' : 'flex items-center gap-1 shrink-0'
+              isVertical ? 'grid grid-cols-2 gap-1.5 shrink-0' : 'flex items-center gap-1.5 shrink-0'
             }
           >
             <button
               type="button"
               onClick={onUndo}
               disabled={!undoEnabled}
-              className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-base-200 text-base-content/75 disabled:opacity-30 transition-colors"
+              className={`${
+                isVertical ? 'w-9 h-9' : 'w-10 h-10'
+              } rounded-full flex items-center justify-center hover:bg-base-200 text-base-content/75 disabled:opacity-30 transition-colors`}
               title="元に戻す (Ctrl+Z)"
             >
-              <Undo2 className="w-4 h-4" />
+              <Undo2 className="w-5 h-5" />
             </button>
             <button
               type="button"
               onClick={onRedo}
               disabled={!redoEnabled}
-              className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-base-200 text-base-content/75 disabled:opacity-30 transition-colors"
+              className={`${
+                isVertical ? 'w-9 h-9' : 'w-10 h-10'
+              } rounded-full flex items-center justify-center hover:bg-base-200 text-base-content/75 disabled:opacity-30 transition-colors`}
               title="やり直す (Ctrl+Shift+Z)"
             >
-              <Redo2 className="w-4 h-4" />
+              <Redo2 className="w-5 h-5" />
             </button>
           </div>
 
@@ -1087,11 +1157,82 @@ export function FloatingToolPalette({
           <button
             type="button"
             onClick={handleCollapseButton}
-            className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-base-200 text-base-content/55 hover:text-base-content transition-colors shrink-0"
+            className="w-10 h-10 rounded-full flex items-center justify-center hover:bg-base-200 text-base-content/55 hover:text-base-content transition-colors shrink-0"
             title="丸く折りたたむ（四隅へドラッグでも収納できます）"
           >
-            <Minimize2 className="w-4 h-4" />
+            <Minimize2 className="w-5 h-5" />
           </button>
+          </div>
+        </div>
+      )}
+
+      {/* Freeform-style Speech Bubble Popover for Stroke Width (2nd tap on pen/marker) */}
+      {sizePopover && !paletteState.collapsed && (
+        <div
+          ref={sizePopoverRef}
+          onPointerDown={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+          style={{
+            left: `${sizePopover.anchorX.toFixed(1)}px`,
+            top: `${sizePopover.anchorY.toFixed(1)}px`,
+            transform:
+              sizePopover.dock === 'bottom'
+                ? 'translate(-50%, -100%)'
+                : sizePopover.dock === 'top'
+                  ? 'translate(-50%, 0)'
+                  : sizePopover.dock === 'left'
+                    ? 'translate(0, -50%)'
+                    : 'translate(-100%, -50%)',
+          }}
+          className="absolute z-40 select-none"
+        >
+          <div className="relative animate-palette-popover rounded-full bg-base-100/95 backdrop-blur-md border border-base-300 shadow-xl px-2.5 py-2 flex items-center gap-1.5">
+            {/* Speech bubble triangle pointer pointing toward the active tool button */}
+            <span
+              aria-hidden="true"
+              className={`absolute w-3 h-3 rotate-45 bg-base-100/95 pointer-events-none ${
+                sizePopover.dock === 'bottom'
+                  ? '-bottom-[7px] left-1/2 -translate-x-1/2 border-r border-b border-base-300'
+                  : sizePopover.dock === 'top'
+                    ? '-top-[7px] left-1/2 -translate-x-1/2 border-l border-t border-base-300'
+                    : sizePopover.dock === 'left'
+                      ? '-left-[7px] top-1/2 -translate-y-1/2 border-l border-b border-base-300'
+                      : '-right-[7px] top-1/2 -translate-y-1/2 border-r border-t border-base-300'
+              }`}
+            />
+
+            {SIZE_OPTIONS.map((opt, idx) => {
+              const dotPx = idx === 0 ? 7 : idx === 1 ? 13 : 19;
+              const currentSizeIdx =
+                sizePopover.tool === 'marker' ? markerSizeIndex : penSizeIndex;
+              const active = currentSizeIdx === idx;
+              return (
+                <button
+                  key={opt.label}
+                  type="button"
+                  title={`太さ：${opt.label}`}
+                  onClick={() => {
+                    if (sizePopover.tool === 'marker') {
+                      setMarkerSizeIndex(idx as 0 | 1 | 2);
+                    } else {
+                      setPenSizeIndex(idx as 0 | 1 | 2);
+                    }
+                  }}
+                  className={`relative z-10 w-11 h-11 rounded-full flex items-center justify-center transition-all duration-150 ${
+                    active
+                      ? 'bg-primary/12 ring-2 ring-primary'
+                      : 'hover:bg-base-200'
+                  }`}
+                >
+                  <span
+                    className={`rounded-full block transition-colors ${
+                      active ? 'bg-primary animate-dot-pop' : 'bg-base-content/80'
+                    }`}
+                    style={{ width: dotPx, height: dotPx }}
+                  />
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
