@@ -173,8 +173,8 @@ function computeTargetPosition(
 
   if (target.kind === 'corner') {
     x = target.corner.endsWith('left') ? margin : boundsW - elW - margin;
-    // Offset top-left corner below the floating hamburger button so they never overlap
-    const topOffset = target.corner === 'top-left' ? margin + 52 : margin;
+    // Offset top corners below the 54px floating hamburger / panel buttons so they never overlap
+    const topOffset = target.corner.startsWith('top') ? margin + 66 : margin;
     y = target.corner.startsWith('top') ? topOffset : boundsH - elH - bottomMargin;
   } else {
     switch (target.edge) {
