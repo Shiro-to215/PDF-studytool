@@ -246,14 +246,53 @@ export function FloatingToolPalette({
   const [boundsSize, setBoundsSize] = useState({ w: 800, h: 600 });
 
   const paletteElRef = useRef<HTMLDivElement | null>(null);
+  const contentElRef = useRef<HTMLDivElement | null>(null);
   const safeBottomRef = useRef<HTMLDivElement | null>(null);
+  const activeAnimsRef = useRef<Animation[]>([]);
   const flipOriginRef = useRef<{
     cx: number;
     cy: number;
     w: number;
     h: number;
     wasCollapsed: boolean;
+    wasVertical: boolean;
   } | null>(null);
+
+  const clearMorphStyles = () => {
+    for (const anim of activeAnimsRef.current) {
+      try {
+        anim.cancel();
+      } catch {
+        // Ignore
+      }
+    }
+    activeAnimsRef.current = [];
+    const el = paletteElRef.current;
+    if (el) {
+      el.style.width = '';
+      el.style.height = '';
+      el.style.overflow = '';
+      el.style.maxWidth = '';
+      el.style.maxHeight = '';
+    }
+    const content = contentElRef.current;
+    if (content) {
+      content.style.flexShrink = '';
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      for (const anim of activeAnimsRef.current) {
+        try {
+          anim.cancel();
+        } catch {
+          // Ignore
+        }
+      }
+      activeAnimsRef.current = [];
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -286,11 +325,13 @@ export function FloatingToolPalette({
 
   const isDraggingMoved = Boolean(dragState?.moved);
 
-  // Unified pixel positioning + smooth glide/unfold animation on release/toggle
+  // Unified pixel positioning + smooth glide/unfold/liquid-morph animation on release/toggle
   useLayoutEffect(() => {
     const el = paletteElRef.current;
     const boundsEl = boundsRef.current;
     if (!el || !boundsEl) return;
+
+    clearMorphStyles();
 
     if (isDraggingMoved && dragState) {
       const x = dragState.leftInBounds + (dragState.curX - dragState.startX);
@@ -320,10 +361,161 @@ export function FloatingToolPalette({
     const origin = flipOriginRef.current;
     if (origin) {
       flipOriginRef.current = null;
+      const isVert = paletteState.dock === 'left' || paletteState.dock === 'right';
       const isExpand = origin.wasCollapsed && !paletteState.collapsed;
+      const isCollapse =
+        !origin.wasCollapsed && paletteState.collapsed && typeof el.animate === 'function';
+      const isOrientationMorph =
+        !origin.wasCollapsed &&
+        !paletteState.collapsed &&
+        origin.wasVertical !== isVert &&
+        typeof el.animate === 'function';
 
-      if (isExpand) {
-        const isVert = paletteState.dock === 'left' || paletteState.dock === 'right';
+      const EASE_OUT = 'cubic-bezier(0.22, 1, 0.36, 1)';
+
+      if (isOrientationMorph) {
+        // Ease-out water-like liquid morph when moving directly between vertical <-> horizontal
+        const startCX = origin.cx - boundsRect.left;
+        const startCY = origin.cy - boundsRect.top;
+        const endCX = targetX + elW / 2;
+        const endCY = targetY + elH / 2;
+        const startW = origin.w;
+        const startH = origin.h;
+        const endW = elW;
+        const endH = elH;
+        const wShrinking = startW > endW;
+        const hShrinking = startH > endH;
+
+        const STEPS = 20;
+        const shellKeyframes: Keyframe[] = [];
+        for (let i = 0; i <= STEPS; i++) {
+          const u = i / STEPS;
+          // Smooth, slightly gentler ease-out deceleration
+          const posT = 1 - Math.pow(1 - u, 3.1);
+
+          const liquidWave = Math.pow(u, 2) * Math.sin(u * Math.PI * 2 - Math.PI);
+          const shrinkT = 1 - Math.pow(1 - u, 3.9) + 0.004 * liquidWave;
+          const growT = 1 - Math.pow(1 - u, 2.6) + 0.014 * liquidWave;
+
+          const wt = wShrinking ? shrinkT : growT;
+          const ht = hShrinking ? shrinkT : growT;
+
+          const curW = Math.max(44, startW + (endW - startW) * wt);
+          const curH = Math.max(44, startH + (endH - startH) * ht);
+          const curCX = startCX + (endCX - startCX) * posT;
+          const curCY = startCY + (endCY - startCY) * posT;
+
+          let curX = curCX - curW / 2;
+          let curY = curCY - curH / 2;
+          if (i > 0 && i < STEPS) {
+            curX = Math.max(6, Math.min(boundsRect.width - curW - 6, curX));
+            curY = Math.max(6, Math.min(boundsRect.height - curH - 6, curY));
+          }
+
+          shellKeyframes.push({
+            offset: u,
+            width: `${curW.toFixed(1)}px`,
+            height: `${curH.toFixed(1)}px`,
+            transform: `translate3d(${curX.toFixed(1)}px, ${curY.toFixed(1)}px, 0)`,
+          });
+        }
+
+        el.style.transition = 'none';
+        el.style.opacity = '';
+        el.style.overflow = 'hidden';
+        el.style.maxWidth = 'none';
+        el.style.maxHeight = 'none';
+        el.style.transform = `translate3d(${targetX.toFixed(1)}px, ${targetY.toFixed(1)}px, 0)`;
+
+        const content = contentElRef.current;
+        if (content) {
+          content.style.flexShrink = '0';
+        }
+
+        const shellAnim = el.animate(shellKeyframes, {
+          duration: 400,
+          easing: 'linear',
+        });
+        const anims: Animation[] = [shellAnim];
+
+        if (content && typeof content.animate === 'function') {
+          const contentAnim = content.animate(
+            [
+              { offset: 0, opacity: 0, transform: 'scale(0.9)' },
+              { offset: 0.16, opacity: 0.2, transform: 'scale(0.94)' },
+              { offset: 0.72, opacity: 0.96, transform: 'scale(1.006)' },
+              { offset: 1, opacity: 1, transform: 'scale(1)' },
+            ],
+            {
+              duration: 400,
+              easing: EASE_OUT,
+            },
+          );
+          anims.push(contentAnim);
+        }
+
+        activeAnimsRef.current = anims;
+        shellAnim.onfinish = () => {
+          if (activeAnimsRef.current.includes(shellAnim)) {
+            clearMorphStyles();
+          }
+        };
+      } else if (isCollapse) {
+        // Smooth ease-out liquid shrink from horizontal/vertical bar into corner circle
+        const startW = origin.w;
+        const startH = origin.h;
+        const startX = origin.cx - boundsRect.left - startW / 2;
+        const startY = origin.cy - boundsRect.top - startH / 2;
+
+        el.style.transition = 'none';
+        el.style.opacity = '';
+        el.style.overflow = 'hidden';
+        el.style.maxWidth = 'none';
+        el.style.maxHeight = 'none';
+        el.style.transform = `translate3d(${targetX.toFixed(1)}px, ${targetY.toFixed(1)}px, 0)`;
+
+        const shellAnim = el.animate(
+          [
+            {
+              width: `${startW.toFixed(1)}px`,
+              height: `${startH.toFixed(1)}px`,
+              transform: `translate3d(${startX.toFixed(1)}px, ${startY.toFixed(1)}px, 0)`,
+            },
+            {
+              width: `${elW.toFixed(1)}px`,
+              height: `${elH.toFixed(1)}px`,
+              transform: `translate3d(${targetX.toFixed(1)}px, ${targetY.toFixed(1)}px, 0)`,
+            },
+          ],
+          {
+            duration: 400,
+            easing: EASE_OUT,
+          },
+        );
+        const anims: Animation[] = [shellAnim];
+
+        const content = contentElRef.current;
+        if (content && typeof content.animate === 'function') {
+          const contentAnim = content.animate(
+            [
+              { opacity: 0, transform: 'scale(0.72)' },
+              { opacity: 1, transform: 'scale(1)' },
+            ],
+            {
+              duration: 400,
+              easing: EASE_OUT,
+            },
+          );
+          anims.push(contentAnim);
+        }
+
+        activeAnimsRef.current = anims;
+        shellAnim.onfinish = () => {
+          if (activeAnimsRef.current.includes(shellAnim)) {
+            clearMorphStyles();
+          }
+        };
+      } else if (isExpand) {
         const sx = Math.max(isVert ? 0.85 : 0.16, Math.min(1, origin.w / Math.max(1, elW)));
         const sy = Math.max(isVert ? 0.16 : 0.85, Math.min(1, origin.h / Math.max(1, elH)));
         const visW = elW * sx;
@@ -351,8 +543,7 @@ export function FloatingToolPalette({
         // Force layout flush so the collapsed corner frame is committed before unfolding
         void el.offsetWidth;
 
-        el.style.transition =
-          'transform 560ms cubic-bezier(0.24, 0.84, 0.32, 1), opacity 360ms ease-out';
+        el.style.transition = `transform 400ms ${EASE_OUT}, opacity 260ms ${EASE_OUT}`;
         el.style.opacity = '1';
         el.style.transform = `translate3d(${targetX.toFixed(1)}px, ${targetY.toFixed(1)}px, 0) scale(1, 1)`;
       } else {
@@ -371,7 +562,7 @@ export function FloatingToolPalette({
         // Force layout flush so the starting frame is committed before gliding
         void el.offsetWidth;
 
-        el.style.transition = 'transform 460ms cubic-bezier(0.25, 0.85, 0.3, 1)';
+        el.style.transition = `transform 400ms ${EASE_OUT}`;
         el.style.transform = `translate3d(${targetX.toFixed(1)}px, ${targetY.toFixed(1)}px, 0)`;
       }
     } else {
@@ -408,8 +599,21 @@ export function FloatingToolPalette({
     e.stopPropagation();
 
     const bounds = boundsRef.current?.getBoundingClientRect();
-    const elRect = paletteElRef.current?.getBoundingClientRect();
-    if (!bounds || !elRect) return;
+    const el = paletteElRef.current;
+    const visualRect = el?.getBoundingClientRect();
+    if (!bounds || !el || !visualRect) return;
+
+    const wasMorphing = activeAnimsRef.current.length > 0;
+    clearMorphStyles();
+
+    const realW = wasMorphing ? el.offsetWidth || visualRect.width : visualRect.width;
+    const realH = wasMorphing ? el.offsetHeight || visualRect.height : visualRect.height;
+    const leftInBounds = wasMorphing
+      ? visualRect.left + visualRect.width / 2 - bounds.left - realW / 2
+      : visualRect.left - bounds.left;
+    const topInBounds = wasMorphing
+      ? visualRect.top + visualRect.height / 2 - bounds.top - realH / 2
+      : visualRect.top - bounds.top;
 
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -423,10 +627,10 @@ export function FloatingToolPalette({
       startY: e.clientY,
       curX: e.clientX,
       curY: e.clientY,
-      leftInBounds: elRect.left - bounds.left,
-      topInBounds: elRect.top - bounds.top,
-      elW: elRect.width,
-      elH: elRect.height,
+      leftInBounds,
+      topInBounds,
+      elW: realW,
+      elH: realH,
       moved: false,
       preview: null,
     });
@@ -480,6 +684,7 @@ export function FloatingToolPalette({
         w: r.width,
         h: r.height,
         wasCollapsed: paletteState.collapsed,
+        wasVertical: paletteState.dock === 'left' || paletteState.dock === 'right',
       };
     }
 
@@ -528,6 +733,7 @@ export function FloatingToolPalette({
         w: r.width,
         h: r.height,
         wasCollapsed: paletteState.collapsed,
+        wasVertical: paletteState.dock === 'left' || paletteState.dock === 'right',
       };
     }
     setPaletteState((prev) => ({
@@ -621,7 +827,7 @@ export function FloatingToolPalette({
             isDraggingMoved ? 'ring-2 ring-primary/30' : ''
           }`}
         >
-          <div className="relative flex items-center justify-center">
+          <div ref={contentElRef} className="relative flex items-center justify-center shrink-0">
             {renderToolIcon('w-6 h-6 text-base-content/85')}
             {tool !== 'eraser' && (
               <span
@@ -646,14 +852,22 @@ export function FloatingToolPalette({
           onPointerCancel={(e) => endDrag(e, true)}
           onTouchStart={(e) => e.stopPropagation()}
           style={{ touchAction: 'none', transformOrigin: 'center center' }}
-          className={`absolute top-0 left-0 z-30 bg-base-100/95 backdrop-blur-md border border-base-300 shadow-lg select-none will-change-transform ${
+          className={`absolute top-0 left-0 z-30 bg-base-100/95 backdrop-blur-md border border-base-300 shadow-lg rounded-full flex items-center justify-center select-none will-change-transform ${
             isDraggingMoved ? 'opacity-95 ring-2 ring-primary/30' : ''
           } ${
             isVertical
-              ? 'flex flex-col items-center gap-2 px-2.5 py-3 rounded-full max-h-[calc(100%-24px)] overflow-y-auto thin-scrollbar'
-              : 'flex flex-row items-center gap-2 px-3.5 py-2 rounded-full max-w-[calc(100%-24px)] overflow-x-auto thin-scrollbar'
+              ? 'max-h-[calc(100%-24px)]'
+              : 'max-w-[calc(100%-24px)]'
           }`}
         >
+          <div
+            ref={contentElRef}
+            className={
+              isVertical
+                ? 'flex flex-col items-center gap-2 px-2.5 py-3 max-h-full overflow-y-auto thin-scrollbar'
+                : 'flex flex-row items-center gap-2 px-3.5 py-2 max-w-full overflow-x-auto thin-scrollbar'
+            }
+          >
           {/* Drag Handle */}
           <div
             onPointerDown={beginDrag}
@@ -879,6 +1093,7 @@ export function FloatingToolPalette({
           >
             <Minimize2 className="w-4 h-4" />
           </button>
+          </div>
         </div>
       )}
     </>
