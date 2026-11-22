@@ -1350,16 +1350,17 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         style={{ touchAction: 'none' }}
         {...gestureHandlers}
       >
-        {/* Subtle edge page-turn buttons */}
+        {/* Edge page-turn buttons */}
         {canGoLeft && (
           <button
             type="button"
             onPointerDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
             onClick={() => triggerProgrammaticFlip(leftArrowIsPrev ? 'prev' : 'next')}
             aria-label={leftArrowIsPrev ? '前のページ' : '次のページ'}
-            className="hidden sm:flex absolute left-3 top-1/2 -translate-y-1/2 z-30 btn btn-circle btn-sm bg-base-100/90 border border-base-300 shadow-sm hover:bg-base-100 text-base-content/70"
+            className="hidden sm:flex absolute left-3.5 top-1/2 -translate-y-1/2 z-30 w-12 h-12 rounded-full items-center justify-center bg-base-100/90 backdrop-blur-md border border-base-300 shadow-md hover:bg-base-100 text-base-content/75 hover:text-base-content transition-colors active:scale-95"
           >
-            <ChevronLeft className="w-4 h-4" />
+            <ChevronLeft className="w-6 h-6" />
           </button>
         )}
 
@@ -1367,11 +1368,12 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
           <button
             type="button"
             onPointerDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
             onClick={() => triggerProgrammaticFlip(leftArrowIsPrev ? 'next' : 'prev')}
             aria-label={leftArrowIsPrev ? '次のページ' : '前のページ'}
-            className="hidden sm:flex absolute right-3 top-1/2 -translate-y-1/2 z-30 btn btn-circle btn-sm bg-base-100/90 border border-base-300 shadow-sm hover:bg-base-100 text-base-content/70"
+            className="hidden sm:flex absolute right-3.5 top-1/2 -translate-y-1/2 z-30 w-12 h-12 rounded-full items-center justify-center bg-base-100/90 backdrop-blur-md border border-base-300 shadow-md hover:bg-base-100 text-base-content/75 hover:text-base-content transition-colors active:scale-95"
           >
-            <ChevronRight className="w-4 h-4" />
+            <ChevronRight className="w-6 h-6" />
           </button>
         )}
 
