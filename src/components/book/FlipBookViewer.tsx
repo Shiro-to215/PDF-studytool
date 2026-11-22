@@ -236,12 +236,13 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         liveZoomRef.current = { scale: s, panX: px, panY: py };
         const el = zoomWrapperRef.current;
         if (el) {
+          // Keep zoomWrapperRef permanently on its own GPU compositing layer via translate3d
+          // (never toggling to 'none') so iPadOS WebKit never leaves stale shadow/outline ghosts
+          // on stageRef behind the PDF, while omitting scale() when settled so <canvas> stays
+          // at 1:1 native Retina pixel sharpness.
           const residualScale = s / Math.max(0.01, committedScaleRef.current);
           const needsScale = Math.abs(residualScale - 1) > 0.0005;
-          const needsTranslate = Math.abs(px) > 0.05 || Math.abs(py) > 0.05;
-          if (!needsScale && !needsTranslate) {
-            el.style.transform = 'none';
-          } else if (!needsScale) {
+          if (!needsScale) {
             el.style.transform = `translate3d(${px.toFixed(2)}px, ${py.toFixed(2)}px, 0)`;
           } else {
             el.style.transform = `translate3d(${px.toFixed(2)}px, ${py.toFixed(2)}px, 0) scale(${residualScale.toFixed(4)})`;
@@ -1091,11 +1092,12 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
     const scaledBookW = scaledPageW * (spreadMode === 'double' ? 2 : 1);
     const scaledBookH = scaledPageH;
     const isFlipping = flipSession !== null;
+    const isZoomedLayout = committedScale > 1.01;
 
     return (
       <div
         ref={stageRef}
-        className="relative flex-1 h-full flex items-center justify-center overflow-hidden bg-base-200 select-none"
+        className="relative flex-1 h-full flex items-center justify-center overflow-hidden bg-base-200 select-none isolate"
         style={{ touchAction: 'none' }}
         {...gestureHandlers}
       >
@@ -1136,11 +1138,17 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         >
           <div
             ref={bookRef}
-            className={`relative rounded-lg shadow-[0_14px_40px_-14px_rgba(15,23,42,0.22)] ring-1 ring-black/8 dark:ring-white/10 ${
-              isFlipping ? 'preserve-3d' : ''
-            }`}
+            className={`relative rounded-lg ${
+              isZoomedLayout
+                ? ''
+                : 'shadow-[0_14px_40px_-14px_rgba(15,23,42,0.22)]'
+            } ${isFlipping ? 'preserve-3d' : 'overflow-hidden bg-white'}`}
             style={{ width: scaledBookW, height: scaledBookH }}
           >
+            {/* Crisp inner border overlay (avoids outer box-shadow / ring-1 repaint ghosts on WebKit) */}
+            {!isFlipping && (
+              <div className="absolute inset-0 rounded-lg border border-black/8 dark:border-white/10 pointer-events-none z-10" />
+            )}
             {/* === DOUBLE SPREAD MODE === */}
             {spreadMode === 'double' && (
               <div className={`relative w-full h-full flex ${isFlipping ? 'preserve-3d' : ''}`}>
