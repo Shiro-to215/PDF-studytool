@@ -86,7 +86,6 @@ export function StudySidebar({
             workbook={workbook}
             pageStates={pageStates}
             problems={problems}
-            unitNodes={unitNodes}
           />
         )}
         {sidebarTab === 'toc' && (

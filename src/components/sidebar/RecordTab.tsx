@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { PageState, Problem, UnitNode, Workbook } from '../../types/models';
+import type { PageState, Problem, Workbook } from '../../types/models';
 import {
   addCustomMissReason,
   upsertPageState,
@@ -12,14 +12,12 @@ interface RecordTabProps {
   workbook: Workbook;
   pageStates: PageState[];
   problems: Problem[];
-  unitNodes: UnitNode[];
 }
 
 export function RecordTab({
   workbook,
   pageStates,
   problems,
-  unitNodes,
 }: RecordTabProps) {
   const {
     currentPage,
@@ -43,24 +41,6 @@ export function RecordTab({
     return Array.from(new Set(pages)).sort((a, b) => a - b);
   }, [layout.pages, currentPage]);
 
-  // Build unit path helper for problem subtitles
-  const unitPathMap = useMemo(() => {
-    const byId = new Map(unitNodes.map((u) => [u.id, u]));
-    const cache = new Map<string, string>();
-    const resolve = (id: string | null): string => {
-      if (!id) return '';
-      if (cache.has(id)) return cache.get(id)!;
-      const node = byId.get(id);
-      if (!node) return '';
-      const parentPath = resolve(node.parentId);
-      const full = parentPath ? `${parentPath} / ${node.name}` : node.name;
-      cache.set(id, full);
-      return full;
-    };
-    for (const u of unitNodes) resolve(u.id);
-    return cache;
-  }, [unitNodes]);
-
   const pageStateMap = useMemo(
     () => new Map(pageStates.map((s) => [s.pageNumber, s])),
     [pageStates],
@@ -79,8 +59,6 @@ export function RecordTab({
     return map;
   }, [problems]);
 
-  const isMultiPage = visiblePages.length > 1;
-
   return (
     <div className="flex-1 overflow-y-auto thin-scrollbar p-3.5 space-y-3">
       {visiblePages.flatMap((pageNum) => {
@@ -92,7 +70,6 @@ export function RecordTab({
               recordKey={`prob:${prob.id}`}
               values={{
                 title: prob.numberLabel,
-                subtitle: prob.unitId ? unitPathMap.get(prob.unitId) : undefined,
                 status: prob.status,
                 missReasons: prob.missReasons,
                 hints: prob.hints,
@@ -100,8 +77,6 @@ export function RecordTab({
                 memo: prob.memo,
               }}
               customReasons={workbook.customReasons}
-              pageNumber={prob.pageNumber}
-              showPageBadge={isMultiPage}
               onPatch={(patch) => {
                 void upsertProblem(prob.id, patch);
               }}
@@ -119,7 +94,6 @@ export function RecordTab({
             recordKey={`page:${workbook.id}:${pageNum}`}
             values={{
               title: `P.${pageNum}`,
-              subtitle: 'ページ単位の学習記録',
               status: pageState?.status ?? 'none',
               missReasons: pageState?.missReasons ?? [],
               hints: pageState?.hints ?? [],
@@ -127,7 +101,6 @@ export function RecordTab({
               memo: pageState?.memo ?? '',
             }}
             customReasons={workbook.customReasons}
-            pageNumber={pageNum}
             onPatch={(patch) => {
               void upsertPageState(workbook.id, pageNum, patch);
             }}

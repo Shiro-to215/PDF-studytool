@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import {
-  ChevronDown,
   ChevronRight,
   Eye,
   EyeOff,
@@ -17,7 +16,6 @@ import {
 
 export interface RecordCardValues {
   title: string;
-  subtitle?: string;
   status: StudyStatus;
   missReasons: string[];
   hints: string[];
@@ -29,8 +27,6 @@ interface RecordCardProps {
   recordKey: string;
   values: RecordCardValues;
   customReasons: string[];
-  pageNumber: number;
-  showPageBadge?: boolean;
   onPatch: (patch: {
     status?: StudyStatus;
     missReasons?: string[];
@@ -43,12 +39,17 @@ interface RecordCardProps {
 
 const STATUS_ORDER: StudyStatus[] = ['none', 'review', 'weak', 'done'];
 
+const ACTIVE_STATUS_BUTTON_CLASS: Record<StudyStatus, string> = {
+  none: 'bg-base-100 text-base-content border-base-300',
+  review: 'bg-amber-500/18 text-amber-800 dark:text-amber-200 border-amber-500/45',
+  weak: 'bg-rose-500/18 text-rose-800 dark:text-rose-200 border-rose-500/45',
+  done: 'bg-emerald-500/18 text-emerald-800 dark:text-emerald-200 border-emerald-500/45',
+};
+
 export function RecordCard({
   recordKey,
   values,
   customReasons,
-  pageNumber,
-  showPageBadge = false,
   onPatch,
   onAddCustomReason,
 }: RecordCardProps) {
@@ -184,425 +185,382 @@ export function RecordCard({
   };
 
   return (
-    <div className="rounded-xl border border-base-300 bg-base-100 p-3.5 space-y-3">
-      {/* Card Header */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <h3 className="text-sm font-semibold text-base-content truncate">
-              {values.title}
-            </h3>
-            {showPageBadge && (
-              <span className="shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-base-200 text-base-content/55">
-                P.{pageNumber}
-              </span>
-            )}
-          </div>
-          {values.subtitle && (
-            <p className="text-[11px] text-base-content/55 truncate mt-0.5">
-              {values.subtitle}
-            </p>
-          )}
+    <div className="rounded-2xl border border-base-300 bg-base-100 overflow-hidden">
+      {/* Compact 1-Row Accordion Header (Title + Status Badge) */}
+      <button
+        type="button"
+        onClick={() => setDetailsOpen((v) => !v)}
+        aria-expanded={detailsOpen}
+        className="w-full px-4 py-3.5 flex items-center justify-between gap-2.5 text-left hover:bg-base-200/50 transition-colors"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <ChevronRight
+            className={`w-4 h-4 text-base-content/45 shrink-0 transition-transform duration-200 ${
+              detailsOpen ? 'rotate-90' : ''
+            }`}
+          />
+          <h3 className="text-[15px] font-semibold text-base-content truncate">
+            {values.title}
+          </h3>
         </div>
         <span
-          className={`shrink-0 text-[11px] font-medium px-2 py-0.5 rounded-full border ${
+          className={`shrink-0 text-xs font-medium px-2.5 py-1 rounded-full border ${
             STUDY_STATUS_META[values.status].badgeClass
           }`}
         >
           {STUDY_STATUS_META[values.status].label}
         </span>
-      </div>
+      </button>
 
-      {/* Status Selector (Always visible) */}
-      <div className="space-y-1.5">
-        <span className="text-[11px] font-medium text-base-content/55 block">
-          ステータス
-        </span>
-        <div className="grid grid-cols-4 gap-1 p-1 rounded-lg bg-base-200 border border-base-300">
-          {STATUS_ORDER.map((st) => {
-            const active = values.status === st;
-            return (
-              <button
-                key={st}
-                type="button"
-                onClick={() => void onPatch({ status: st })}
-                className={`py-1.5 px-1 rounded-md text-[11px] font-medium transition-colors ${
-                  active
-                    ? 'bg-base-100 text-base-content shadow-xs ring-1 ring-base-300'
-                    : 'text-base-content/60 hover:text-base-content'
-                }`}
-              >
-                {STUDY_STATUS_META[st].label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Miss Reason Tags (Only shown when status is 'review' or 'weak') */}
-      {showMissReasons && (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-medium text-base-content/55">
-              ミス原因タグ
-            </span>
-            {!addingReason && (
-              <button
-                type="button"
-                onClick={() => setAddingReason(true)}
-                className="text-[11px] text-base-content/55 hover:text-primary flex items-center gap-0.5"
-              >
-                <Plus className="w-3 h-3" />
-                追加
-              </button>
-            )}
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {allReasons.map((reason) => {
-              const selected = values.missReasons.includes(reason);
+      {/* Expandable Details (Status + Miss Reasons + Hints + Compact Answer + Memo) */}
+      {detailsOpen && (
+        <div className="px-4 pb-4 pt-3.5 border-t border-base-300 space-y-4">
+          {/* Flex-expanding Status Selector (active button grows wider & bolder) */}
+          <div className="flex items-center gap-1.5 p-1 rounded-xl bg-base-200 border border-base-300">
+            {STATUS_ORDER.map((st) => {
+              const active = values.status === st;
               return (
                 <button
-                  key={reason}
+                  key={st}
                   type="button"
-                  onClick={() => toggleReason(reason)}
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-medium border transition-colors ${
-                    selected
-                      ? 'bg-primary text-primary-content border-primary'
-                      : 'bg-base-200/70 text-base-content/70 border-base-300 hover:bg-base-200'
+                  onClick={() => void onPatch({ status: st })}
+                  className={`min-w-0 h-10 px-1.5 rounded-lg whitespace-nowrap overflow-hidden transition-all duration-300 ease-out flex items-center justify-center border ${
+                    active
+                      ? `flex-[1.75] text-sm font-semibold shadow-xs ${ACTIVE_STATUS_BUTTON_CLASS[st]}`
+                      : 'flex-1 text-xs font-medium border-transparent text-base-content/55 hover:text-base-content'
                   }`}
                 >
-                  {reason}
+                  {STUDY_STATUS_META[st].label}
                 </button>
               );
             })}
           </div>
-          {addingReason && (
-            <form onSubmit={handleSaveCustomReason} className="flex gap-1.5 pt-1">
-              <input
-                type="text"
-                autoFocus
-                value={reasonDraft}
-                onChange={(e) => setReasonDraft(e.target.value)}
-                placeholder="新しい原因タグ..."
-                className="input input-bordered input-xs flex-1"
-              />
-              <button type="submit" className="btn btn-primary btn-xs">
-                追加
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setAddingReason(false);
-                  setReasonDraft('');
-                }}
-                className="btn btn-ghost btn-xs"
-              >
-                取消
-              </button>
-            </form>
-          )}
-        </div>
-      )}
 
-      {/* Accordion Toggle for Hints, Compact Answer & Memo */}
-      <div className="pt-2 border-t border-base-300">
-        <button
-          type="button"
-          onClick={() => setDetailsOpen((v) => !v)}
-          className="w-full flex items-center justify-between gap-2 py-1 text-xs text-base-content/70 hover:text-base-content transition-colors"
-        >
-          <span className="flex items-center gap-1.5 font-medium">
-            {detailsOpen ? (
-              <ChevronDown className="w-3.5 h-3.5 text-base-content/50" />
-            ) : (
-              <ChevronRight className="w-3.5 h-3.5 text-base-content/50" />
-            )}
-            <span>ヒント・答え・メモ</span>
-          </span>
-
-          <span className="flex items-center gap-1.5 text-[10px] text-base-content/50">
-            {values.hints.length > 0 && (
-              <span className="px-1.5 py-0.5 rounded bg-base-200">
-                ヒント {values.hints.length}
-              </span>
-            )}
-            {values.compactAnswer && (
-              <span className="px-1.5 py-0.5 rounded bg-base-200">答あり</span>
-            )}
-            {values.memo.trim() && (
-              <span className="px-1.5 py-0.5 rounded bg-base-200">メモ</span>
-            )}
-          </span>
-        </button>
-
-        {detailsOpen && (
-          <div className="pt-3 space-y-4">
-            {/* Hints (Tap to Reveal / Hide) */}
-            <div className="space-y-1.5">
+          {/* Miss Reason Tags (Only shown when status is 'review' or 'weak') */}
+          {showMissReasons && (
+            <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-[11px] font-medium text-base-content/55 flex items-center gap-1">
-                  <Lightbulb className="w-3.5 h-3.5" />
-                  ヒント（タップで表示）
+                <span className="text-xs font-medium text-base-content/60">
+                  ミス原因タグ
                 </span>
-                {!addingHint && (
+                {!addingReason && (
                   <button
                     type="button"
-                    onClick={() => setAddingHint(true)}
-                    className="text-[11px] text-primary hover:underline flex items-center gap-0.5"
+                    onClick={() => setAddingReason(true)}
+                    className="text-xs text-base-content/60 hover:text-primary flex items-center gap-0.5"
                   >
-                    <Plus className="w-3 h-3" />
-                    ヒントを追加
+                    <Plus className="w-3.5 h-3.5" />
+                    追加
                   </button>
                 )}
               </div>
-
-              {values.hints.length === 0 && !addingHint && (
-                <p className="text-xs text-base-content/45">ヒントはまだ登録されていません</p>
-              )}
-
-              <div className="space-y-1.5">
-                {values.hints.map((hint, idx) => {
-                  const revealed = revealedHints.has(idx);
-                  const isEditing = editingHintIdx === idx;
+              <div className="flex flex-wrap gap-1.5">
+                {allReasons.map((reason) => {
+                  const selected = values.missReasons.includes(reason);
                   return (
-                    <div
-                      key={idx}
-                      className="rounded-lg border border-base-300 bg-base-200/50 p-2.5 transition-colors hover:border-base-content/25"
+                    <button
+                      key={reason}
+                      type="button"
+                      onClick={() => toggleReason(reason)}
+                      className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                        selected
+                          ? 'bg-primary text-primary-content border-primary'
+                          : 'bg-base-200/70 text-base-content/75 border-base-300 hover:bg-base-200'
+                      }`}
                     >
-                      <div className="flex items-center justify-between gap-2 text-[10px] text-base-content/55 mb-1">
-                        <button
-                          type="button"
-                          onClick={() => toggleHintReveal(idx)}
-                          disabled={isEditing}
-                          className="flex items-center gap-1 hover:text-base-content disabled:opacity-70"
-                        >
-                          {revealed ? (
-                            <EyeOff className="w-3 h-3" />
-                          ) : (
-                            <Eye className="w-3 h-3" />
-                          )}
-                          <span>ヒント {idx + 1}</span>
-                          {!isEditing && (
-                            <span className="opacity-75">
-                              （{revealed ? 'タップで隠す' : 'タップで表示'}）
-                            </span>
-                          )}
-                        </button>
-                        <div className="flex items-center gap-0.5 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (isEditing) {
-                                setEditingHintIdx(null);
-                                setEditingHintDraft('');
-                              } else {
-                                handleStartEditHint(idx);
-                              }
-                            }}
-                            className={`p-1 rounded transition-colors ${
-                              isEditing
-                                ? 'text-primary bg-primary/10'
-                                : 'text-base-content/50 hover:text-base-content hover:bg-base-300/60'
-                            }`}
-                            title="ヒントを編集"
-                            aria-label="ヒントを編集"
-                          >
-                            <Pencil className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteHint(idx)}
-                            className="p-1 rounded text-base-content/50 hover:text-error hover:bg-error/10 transition-colors"
-                            title="ヒントを削除"
-                            aria-label="ヒントを削除"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {isEditing ? (
-                        <form onSubmit={handleSaveEditHint} className="space-y-1.5 pt-1">
-                          <textarea
-                            autoFocus
-                            rows={2}
-                            value={editingHintDraft}
-                            onChange={(e) => setEditingHintDraft(e.target.value)}
-                            placeholder="ヒントの内容を入力..."
-                            className="textarea textarea-bordered textarea-xs w-full text-xs leading-relaxed"
-                          />
-                          <div className="flex justify-end gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingHintIdx(null);
-                                setEditingHintDraft('');
-                              }}
-                              className="btn btn-ghost btn-xs"
-                            >
-                              キャンセル
-                            </button>
-                            <button type="submit" className="btn btn-primary btn-xs">
-                              保存
-                            </button>
-                          </div>
-                        </form>
-                      ) : (
-                        <div
-                          onClick={() => toggleHintReveal(idx)}
-                          className="cursor-pointer"
-                        >
-                          <p
-                            className={`text-xs leading-relaxed whitespace-pre-wrap spoiler-blur ${
-                              revealed ? 'revealed' : ''
-                            }`}
-                          >
-                            {hint}
-                          </p>
-                        </div>
-                      )}
-                    </div>
+                      {reason}
+                    </button>
                   );
                 })}
               </div>
-
-              {addingHint && (
-                <form onSubmit={handleAddHint} className="space-y-1.5 pt-1">
-                  <textarea
+              {addingReason && (
+                <form onSubmit={handleSaveCustomReason} className="flex gap-1.5 pt-1">
+                  <input
+                    type="text"
                     autoFocus
-                    rows={2}
-                    value={hintDraft}
-                    onChange={(e) => setHintDraft(e.target.value)}
-                    placeholder="詰まったときに見たい方針や着眼点..."
-                    className="textarea textarea-bordered textarea-xs w-full text-xs leading-relaxed"
+                    value={reasonDraft}
+                    onChange={(e) => setReasonDraft(e.target.value)}
+                    placeholder="新しい原因タグ..."
+                    className="input input-bordered input-sm flex-1 text-sm"
                   />
-                  <div className="flex justify-end gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAddingHint(false);
-                        setHintDraft('');
-                      }}
-                      className="btn btn-ghost btn-xs"
-                    >
-                      キャンセル
-                    </button>
-                    <button type="submit" className="btn btn-primary btn-xs">
-                      保存
-                    </button>
-                  </div>
-                </form>
-              )}
-            </div>
-
-            {/* Compact Answer */}
-            <div className="space-y-2 pt-2 border-t border-base-300">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-medium text-base-content/55">
-                  コンパクト答え
-                </span>
-                <div className="flex items-center gap-2">
-                  {!editingAnswer && values.compactAnswer && (
-                    <button
-                      type="button"
-                      onClick={() => setAnswerRevealed((v) => !v)}
-                      className="text-[11px] text-primary hover:underline flex items-center gap-1"
-                    >
-                      {answerRevealed ? (
-                        <>
-                          <EyeOff className="w-3 h-3" />
-                          隠す
-                        </>
-                      ) : (
-                        <>
-                          <Eye className="w-3 h-3" />
-                          表示
-                        </>
-                      )}
-                    </button>
-                  )}
+                  <button type="submit" className="btn btn-primary btn-sm">
+                    追加
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
-                      setAnswerDraft(values.compactAnswer);
-                      setEditingAnswer((v) => !v);
+                      setAddingReason(false);
+                      setReasonDraft('');
                     }}
-                    className="text-[11px] text-base-content/60 hover:text-base-content flex items-center gap-0.5"
+                    className="btn btn-ghost btn-sm"
                   >
-                    <Pencil className="w-3 h-3" />
-                    編集
+                    取消
                   </button>
-                </div>
-              </div>
+                </form>
+              )}
+            </div>
+          )}
 
-              {editingAnswer ? (
-                <div className="space-y-1.5">
-                  <textarea
-                    autoFocus
-                    rows={2}
-                    value={answerDraft}
-                    onChange={(e) => setAnswerDraft(e.target.value)}
-                    placeholder="例：(1) a = 3.0 m/s²  (2) f = 9.0 N"
-                    className="textarea textarea-bordered textarea-xs w-full font-mono text-xs"
-                  />
-                  <div className="flex justify-end gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setEditingAnswer(false)}
-                      className="btn btn-ghost btn-xs"
-                    >
-                      キャンセル
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleSaveAnswer}
-                      className="btn btn-primary btn-xs"
-                    >
-                      保存
-                    </button>
-                  </div>
-                </div>
-              ) : values.compactAnswer ? (
-                <div
-                  onClick={() => setAnswerRevealed((v) => !v)}
-                  className="p-2.5 rounded-lg border border-base-300 bg-base-200/50 cursor-pointer"
+          {/* Hints (Tap to Reveal / Hide) */}
+          <div className="space-y-2 pt-3 border-t border-base-300">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-base-content/60 flex items-center gap-1.5">
+                <Lightbulb className="w-4 h-4" />
+                ヒント（タップで表示）
+              </span>
+              {!addingHint && (
+                <button
+                  type="button"
+                  onClick={() => setAddingHint(true)}
+                  className="text-xs text-primary hover:underline flex items-center gap-0.5"
                 >
-                  <p
-                    className={`text-xs font-mono leading-relaxed whitespace-pre-wrap spoiler-blur ${
-                      answerRevealed ? 'revealed' : ''
-                    }`}
-                  >
-                    {values.compactAnswer}
-                  </p>
-                </div>
-              ) : (
-                <p className="text-xs text-base-content/45">
-                  答えは未登録です（右上の「編集」またはCSV/JSONから登録）
-                </p>
+                  <Plus className="w-3.5 h-3.5" />
+                  追加
+                </button>
               )}
             </div>
 
-            {/* Free Memo */}
-            <div className="space-y-1.5 pt-2 border-t border-base-300">
-              <span className="text-[11px] font-medium text-base-content/55 block">
-                メモ
-              </span>
-              <textarea
-                rows={2}
-                value={memoDraft}
-                onChange={(e) => setMemoDraft(e.target.value)}
-                onBlur={() => {
-                  if (memoDraft !== values.memo) {
-                    void onPatch({ memo: memoDraft });
-                  }
-                }}
-                placeholder="気づきや解き直しのメモ..."
-                className="textarea textarea-bordered textarea-xs w-full text-xs leading-relaxed bg-base-200/35"
-              />
+            {values.hints.length === 0 && !addingHint && (
+              <p className="text-xs text-base-content/45">ヒントはまだ登録されていません</p>
+            )}
+
+            <div className="space-y-2">
+              {values.hints.map((hint, idx) => {
+                const revealed = revealedHints.has(idx);
+                const isEditing = editingHintIdx === idx;
+                return (
+                  <div
+                    key={idx}
+                    className="rounded-xl border border-base-300 bg-base-200/50 p-3 transition-colors hover:border-base-content/25"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-xs text-base-content/60 mb-1.5">
+                      <button
+                        type="button"
+                        onClick={() => toggleHintReveal(idx)}
+                        disabled={isEditing}
+                        className="flex items-center gap-1.5 hover:text-base-content disabled:opacity-70"
+                      >
+                        {revealed ? (
+                          <EyeOff className="w-3.5 h-3.5" />
+                        ) : (
+                          <Eye className="w-3.5 h-3.5" />
+                        )}
+                        <span>ヒント {idx + 1}</span>
+                      </button>
+                      <div className="flex items-center gap-0.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isEditing) {
+                              setEditingHintIdx(null);
+                              setEditingHintDraft('');
+                            } else {
+                              handleStartEditHint(idx);
+                            }
+                          }}
+                          className={`p-1.5 rounded-lg transition-colors ${
+                            isEditing
+                              ? 'text-primary bg-primary/10'
+                              : 'text-base-content/55 hover:text-base-content hover:bg-base-300/60'
+                          }`}
+                          title="ヒントを編集"
+                          aria-label="ヒントを編集"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteHint(idx)}
+                          className="p-1.5 rounded-lg text-base-content/55 hover:text-error hover:bg-error/10 transition-colors"
+                          title="ヒントを削除"
+                          aria-label="ヒントを削除"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {isEditing ? (
+                      <form onSubmit={handleSaveEditHint} className="space-y-2 pt-1">
+                        <textarea
+                          autoFocus
+                          rows={2}
+                          value={editingHintDraft}
+                          onChange={(e) => setEditingHintDraft(e.target.value)}
+                          placeholder="ヒントの内容を入力..."
+                          className="textarea textarea-bordered textarea-sm w-full text-sm leading-relaxed"
+                        />
+                        <div className="flex justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingHintIdx(null);
+                              setEditingHintDraft('');
+                            }}
+                            className="btn btn-ghost btn-sm"
+                          >
+                            キャンセル
+                          </button>
+                          <button type="submit" className="btn btn-primary btn-sm">
+                            保存
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <div
+                        onClick={() => toggleHintReveal(idx)}
+                        className="cursor-pointer"
+                      >
+                        <p
+                          className={`text-sm leading-relaxed whitespace-pre-wrap spoiler-blur ${
+                            revealed ? 'revealed' : ''
+                          }`}
+                        >
+                          {hint}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
+
+            {addingHint && (
+              <form onSubmit={handleAddHint} className="space-y-2 pt-1">
+                <textarea
+                  autoFocus
+                  rows={2}
+                  value={hintDraft}
+                  onChange={(e) => setHintDraft(e.target.value)}
+                  placeholder="詰まったときに見たい方針や着眼点..."
+                  className="textarea textarea-bordered textarea-sm w-full text-sm leading-relaxed"
+                />
+                <div className="flex justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddingHint(false);
+                      setHintDraft('');
+                    }}
+                    className="btn btn-ghost btn-sm"
+                  >
+                    キャンセル
+                  </button>
+                  <button type="submit" className="btn btn-primary btn-sm">
+                    保存
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
-        )}
-      </div>
+
+          {/* Compact Answer */}
+          <div className="space-y-2 pt-3 border-t border-base-300">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-base-content/60">
+                コンパクト答え
+              </span>
+              <div className="flex items-center gap-3">
+                {!editingAnswer && values.compactAnswer && (
+                  <button
+                    type="button"
+                    onClick={() => setAnswerRevealed((v) => !v)}
+                    className="text-xs text-primary hover:underline flex items-center gap-1"
+                  >
+                    {answerRevealed ? (
+                      <>
+                        <EyeOff className="w-3.5 h-3.5" />
+                        隠す
+                      </>
+                    ) : (
+                      <>
+                        <Eye className="w-3.5 h-3.5" />
+                        表示
+                      </>
+                    )}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAnswerDraft(values.compactAnswer);
+                    setEditingAnswer((v) => !v);
+                  }}
+                  className="text-xs text-base-content/65 hover:text-base-content flex items-center gap-1"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                  編集
+                </button>
+              </div>
+            </div>
+
+            {editingAnswer ? (
+              <div className="space-y-2">
+                <textarea
+                  autoFocus
+                  rows={2}
+                  value={answerDraft}
+                  onChange={(e) => setAnswerDraft(e.target.value)}
+                  placeholder="例：(1) a = 3.0 m/s²  (2) f = 9.0 N"
+                  className="textarea textarea-bordered textarea-sm w-full font-mono text-sm"
+                />
+                <div className="flex justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setEditingAnswer(false)}
+                    className="btn btn-ghost btn-sm"
+                  >
+                    キャンセル
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveAnswer}
+                    className="btn btn-primary btn-sm"
+                  >
+                    保存
+                  </button>
+                </div>
+              </div>
+            ) : values.compactAnswer ? (
+              <div
+                onClick={() => setAnswerRevealed((v) => !v)}
+                className="p-3 rounded-xl border border-base-300 bg-base-200/50 cursor-pointer"
+              >
+                <p
+                  className={`text-sm font-mono leading-relaxed whitespace-pre-wrap spoiler-blur ${
+                    answerRevealed ? 'revealed' : ''
+                  }`}
+                >
+                  {values.compactAnswer}
+                </p>
+              </div>
+            ) : (
+              <p className="text-xs text-base-content/45">
+                答えは未登録です（右上の「編集」またはCSV/JSONから登録）
+              </p>
+            )}
+          </div>
+
+          {/* Free Memo */}
+          <div className="space-y-2 pt-3 border-t border-base-300">
+            <span className="text-xs font-medium text-base-content/60 block">
+              メモ
+            </span>
+            <textarea
+              rows={2}
+              value={memoDraft}
+              onChange={(e) => setMemoDraft(e.target.value)}
+              onBlur={() => {
+                if (memoDraft !== values.memo) {
+                  void onPatch({ memo: memoDraft });
+                }
+              }}
+              placeholder="気づきや解き直しのメモ..."
+              className="textarea textarea-bordered textarea-sm w-full text-sm leading-relaxed bg-base-200/35"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
