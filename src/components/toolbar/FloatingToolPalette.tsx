@@ -46,6 +46,8 @@ interface DragState {
   curY: number;
   leftInBounds: number;
   topInBounds: number;
+  elW: number;
+  elH: number;
   moved: boolean;
   preview: SnapTarget | null;
 }
@@ -106,17 +108,30 @@ function getExpandDockForCorner(corner: CornerPos, lastDock: DockEdge): DockEdge
 }
 
 function resolveSnapTarget(
-  clientX: number,
-  clientY: number,
+  dragLeft: number,
+  dragTop: number,
+  elW: number,
+  elH: number,
   boundsRect: DOMRect,
 ): SnapTarget {
-  const relX = Math.max(0, Math.min(1, (clientX - boundsRect.left) / Math.max(1, boundsRect.width)));
-  const relY = Math.max(0, Math.min(1, (clientY - boundsRect.top) / Math.max(1, boundsRect.height)));
+  // Use the palette's position within its available travel range (center & outer bounds),
+  // so grabbing an edge handle never requires dragging farther than grabbing the center.
+  const availW = boundsRect.width - elW;
+  const availH = boundsRect.height - elH;
 
-  const nearLeft = relX < 0.17;
-  const nearRight = relX > 0.83;
-  const nearTop = relY < 0.18;
-  const nearBottom = relY > 0.82;
+  const normX =
+    availW > 24
+      ? Math.max(0, Math.min(1, dragLeft / availW))
+      : Math.max(0, Math.min(1, (dragLeft + elW / 2) / Math.max(1, boundsRect.width)));
+  const normY =
+    availH > 24
+      ? Math.max(0, Math.min(1, dragTop / availH))
+      : Math.max(0, Math.min(1, (dragTop + elH / 2) / Math.max(1, boundsRect.height)));
+
+  const nearLeft = normX < 0.16;
+  const nearRight = normX > 0.84;
+  const nearTop = normY < 0.16;
+  const nearBottom = normY > 0.84;
 
   if ((nearLeft || nearRight) && (nearTop || nearBottom)) {
     const corner: CornerPos = nearTop
@@ -130,10 +145,10 @@ function resolveSnapTarget(
   }
 
   const dists: Array<{ edge: DockEdge; d: number }> = [
-    { edge: 'top', d: relY },
-    { edge: 'bottom', d: 1 - relY },
-    { edge: 'left', d: relX },
-    { edge: 'right', d: 1 - relX },
+    { edge: 'top', d: normY },
+    { edge: 'bottom', d: 1 - normY },
+    { edge: 'left', d: normX },
+    { edge: 'right', d: 1 - normX },
   ];
   dists.sort((a, b) => a.d - b.d);
   return { kind: 'edge', edge: dists[0].edge };
@@ -232,7 +247,13 @@ export function FloatingToolPalette({
 
   const paletteElRef = useRef<HTMLDivElement | null>(null);
   const safeBottomRef = useRef<HTMLDivElement | null>(null);
-  const flipOriginRef = useRef<{ cx: number; cy: number } | null>(null);
+  const flipOriginRef = useRef<{
+    cx: number;
+    cy: number;
+    w: number;
+    h: number;
+    wasCollapsed: boolean;
+  } | null>(null);
 
   useEffect(() => {
     try {
@@ -265,7 +286,7 @@ export function FloatingToolPalette({
 
   const isDraggingMoved = Boolean(dragState?.moved);
 
-  // Unified pixel positioning + smooth 460ms glide animation on release/toggle
+  // Unified pixel positioning + smooth glide/unfold animation on release/toggle
   useLayoutEffect(() => {
     const el = paletteElRef.current;
     const boundsEl = boundsRef.current;
@@ -275,20 +296,22 @@ export function FloatingToolPalette({
       const x = dragState.leftInBounds + (dragState.curX - dragState.startX);
       const y = dragState.topInBounds + (dragState.curY - dragState.startY);
       el.style.transition = 'none';
+      el.style.opacity = '';
       el.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
       return;
     }
 
     const boundsRect = boundsEl.getBoundingClientRect();
-    const elRect = el.getBoundingClientRect();
+    const elW = el.offsetWidth || el.getBoundingClientRect().width;
+    const elH = el.offsetHeight || el.getBoundingClientRect().height;
     const target: SnapTarget = paletteState.collapsed
       ? { kind: 'corner', corner: paletteState.corner }
       : { kind: 'edge', edge: paletteState.dock };
 
     const { x: targetX, y: targetY } = computeTargetPosition(
       target,
-      elRect.width,
-      elRect.height,
+      elW,
+      elH,
       boundsRect.width,
       boundsRect.height,
       getSafeBottom(),
@@ -297,24 +320,65 @@ export function FloatingToolPalette({
     const origin = flipOriginRef.current;
     if (origin) {
       flipOriginRef.current = null;
-      const startX = Math.max(
-        0,
-        Math.min(boundsRect.width - elRect.width, origin.cx - boundsRect.left - elRect.width / 2),
-      );
-      const startY = Math.max(
-        0,
-        Math.min(boundsRect.height - elRect.height, origin.cy - boundsRect.top - elRect.height / 2),
-      );
+      const isHorizontalExpand =
+        origin.wasCollapsed &&
+        !paletteState.collapsed &&
+        (paletteState.dock === 'top' || paletteState.dock === 'bottom');
 
-      el.style.transition = 'none';
-      el.style.transform = `translate3d(${startX.toFixed(1)}px, ${startY.toFixed(1)}px, 0)`;
-      // Force layout flush so the starting frame is committed before gliding
-      void el.offsetWidth;
+      if (isHorizontalExpand) {
+        const sx = Math.max(0.16, Math.min(1, origin.w / Math.max(1, elW)));
+        const sy = Math.max(0.85, Math.min(1, origin.h / Math.max(1, elH)));
+        const visW = elW * sx;
+        const visH = elH * sy;
+        const halfWDiff = (elW - visW) / 2;
+        const halfHDiff = (elH - visH) / 2;
 
-      el.style.transition = 'transform 460ms cubic-bezier(0.25, 0.85, 0.3, 1)';
-      el.style.transform = `translate3d(${targetX.toFixed(1)}px, ${targetY.toFixed(1)}px, 0)`;
+        const minStartX = 8 - halfWDiff;
+        const maxStartX = boundsRect.width - 8 - elW + halfWDiff;
+        const minStartY = 8 - halfHDiff;
+        const maxStartY = boundsRect.height - 8 - elH + halfHDiff;
+
+        const startX = Math.max(
+          minStartX,
+          Math.min(maxStartX, origin.cx - boundsRect.left - elW / 2),
+        );
+        const startY = Math.max(
+          minStartY,
+          Math.min(maxStartY, origin.cy - boundsRect.top - elH / 2),
+        );
+
+        el.style.transition = 'none';
+        el.style.opacity = '0.5';
+        el.style.transform = `translate3d(${startX.toFixed(1)}px, ${startY.toFixed(1)}px, 0) scale(${sx.toFixed(3)}, ${sy.toFixed(3)})`;
+        // Force layout flush so the collapsed corner frame is committed before unfolding
+        void el.offsetWidth;
+
+        el.style.transition =
+          'transform 560ms cubic-bezier(0.24, 0.84, 0.32, 1), opacity 360ms ease-out';
+        el.style.opacity = '1';
+        el.style.transform = `translate3d(${targetX.toFixed(1)}px, ${targetY.toFixed(1)}px, 0) scale(1, 1)`;
+      } else {
+        const startX = Math.max(
+          0,
+          Math.min(boundsRect.width - elW, origin.cx - boundsRect.left - elW / 2),
+        );
+        const startY = Math.max(
+          0,
+          Math.min(boundsRect.height - elH, origin.cy - boundsRect.top - elH / 2),
+        );
+
+        el.style.transition = 'none';
+        el.style.opacity = '';
+        el.style.transform = `translate3d(${startX.toFixed(1)}px, ${startY.toFixed(1)}px, 0)`;
+        // Force layout flush so the starting frame is committed before gliding
+        void el.offsetWidth;
+
+        el.style.transition = 'transform 460ms cubic-bezier(0.25, 0.85, 0.3, 1)';
+        el.style.transform = `translate3d(${targetX.toFixed(1)}px, ${targetY.toFixed(1)}px, 0)`;
+      }
     } else {
       el.style.transition = 'none';
+      el.style.opacity = '';
       el.style.transform = `translate3d(${targetX.toFixed(1)}px, ${targetY.toFixed(1)}px, 0)`;
     }
   }, [paletteState, dragEndNonce, boundsSize, tool, isDraggingMoved, dragState, boundsRef]);
@@ -363,6 +427,8 @@ export function FloatingToolPalette({
       curY: e.clientY,
       leftInBounds: elRect.left - bounds.left,
       topInBounds: elRect.top - bounds.top,
+      elW: elRect.width,
+      elH: elRect.height,
       moved: false,
       preview: null,
     });
@@ -377,7 +443,11 @@ export function FloatingToolPalette({
 
     const dist = Math.hypot(e.clientX - dragState.startX, e.clientY - dragState.startY);
     const moved = dragState.moved || dist > 8;
-    const preview = moved ? resolveSnapTarget(e.clientX, e.clientY, bounds) : null;
+    const dragLeft = dragState.leftInBounds + (e.clientX - dragState.startX);
+    const dragTop = dragState.topInBounds + (e.clientY - dragState.startY);
+    const preview = moved
+      ? resolveSnapTarget(dragLeft, dragTop, dragState.elW, dragState.elH, bounds)
+      : null;
 
     setDragState((prev) =>
       prev
@@ -409,6 +479,9 @@ export function FloatingToolPalette({
       flipOriginRef.current = {
         cx: r.left + r.width / 2,
         cy: r.top + r.height / 2,
+        w: r.width,
+        h: r.height,
+        wasCollapsed: paletteState.collapsed,
       };
     }
 
@@ -454,6 +527,9 @@ export function FloatingToolPalette({
       flipOriginRef.current = {
         cx: r.left + r.width / 2,
         cy: r.top + r.height / 2,
+        w: r.width,
+        h: r.height,
+        wasCollapsed: paletteState.collapsed,
       };
     }
     setPaletteState((prev) => ({
@@ -541,7 +617,7 @@ export function FloatingToolPalette({
           onPointerUp={(e) => endDrag(e, false)}
           onPointerCancel={(e) => endDrag(e, true)}
           onTouchStart={(e) => e.stopPropagation()}
-          style={{ touchAction: 'none' }}
+          style={{ touchAction: 'none', transformOrigin: 'center center' }}
           title="タップで展開 / ドラッグで移動"
           className={`absolute top-0 left-0 z-30 w-[60px] h-[60px] rounded-full bg-base-100/95 backdrop-blur-md border border-base-300 shadow-lg flex items-center justify-center cursor-grab active:cursor-grabbing select-none will-change-transform ${
             isDraggingMoved ? 'ring-2 ring-primary/30' : ''
@@ -571,7 +647,7 @@ export function FloatingToolPalette({
           onPointerUp={(e) => endDrag(e, false)}
           onPointerCancel={(e) => endDrag(e, true)}
           onTouchStart={(e) => e.stopPropagation()}
-          style={{ touchAction: 'none' }}
+          style={{ touchAction: 'none', transformOrigin: 'center center' }}
           className={`absolute top-0 left-0 z-30 bg-base-100/95 backdrop-blur-md border border-base-300 shadow-lg select-none will-change-transform ${
             isDraggingMoved ? 'opacity-95 ring-2 ring-primary/30' : ''
           } ${
@@ -584,7 +660,7 @@ export function FloatingToolPalette({
           <div
             onPointerDown={beginDrag}
             title="ドラッグして上下左右へ移動 / 四隅で格納"
-            style={{ touchAction: 'none' }}
+            style={{ touchAction: 'none', transformOrigin: 'center center' }}
             className={`flex items-center justify-center text-base-content/40 hover:text-base-content/75 cursor-grab active:cursor-grabbing shrink-0 ${
               isVertical ? 'w-10 h-5' : 'w-5 h-9'
             }`}

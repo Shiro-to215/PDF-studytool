@@ -4,14 +4,55 @@ import { ensurePdfWorker, pdfjsLib } from './pdfWorker';
 interface CachedPageEntry {
   canvas: HTMLCanvasElement;
   renderWidth: number;
+  pixels: number;
   aspectRatio: number;
   lastUsed: number;
 }
 
-export function getIdealRenderWidth(cssWidth: number, zoomScale = 1): number {
-  const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2.5) : 1;
-  const qualityMult = Math.max(1, Math.min(2.2, zoomScale));
-  return Math.max(900, Math.min(1800, Math.round(cssWidth * dpr * qualityMult)));
+/**
+ * Safe upper bounds for high-DPI rendering on iPadOS Safari / WebKit
+ * (keeps single-canvas pixels and total GPU backing memory well inside iPadOS Jetsam limits).
+ */
+export const MAX_RENDER_WIDTH = 3000;
+export const MAX_CANVAS_PIXELS = 9_500_000;
+export const MAX_INK_CANVAS_PIXELS = 4_500_000;
+
+export function getCappedCanvasSize(
+  desiredWidth: number,
+  desiredHeight: number,
+  maxWidth = MAX_RENDER_WIDTH,
+  maxPixels = MAX_CANVAS_PIXELS,
+): { width: number; height: number } {
+  let w = Math.max(1, desiredWidth);
+  let h = Math.max(1, desiredHeight);
+
+  if (w > maxWidth) {
+    const ratio = maxWidth / w;
+    w = maxWidth;
+    h *= ratio;
+  }
+
+  const area = w * h;
+  if (area > maxPixels) {
+    const ratio = Math.sqrt(maxPixels / area);
+    w *= ratio;
+    h *= ratio;
+  }
+
+  return {
+    width: Math.max(1, Math.round(w)),
+    height: Math.max(1, Math.round(h)),
+  };
+}
+
+export function getIdealRenderWidth(cssWidth: number, zoomScale = 1, aspectRatio?: number): number {
+  const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 3) : 1;
+  const qualityMult = Math.max(1, Math.min(8, zoomScale));
+  const desiredW = Math.max(320, cssWidth * dpr * qualityMult);
+  if (aspectRatio && aspectRatio > 0) {
+    return getCappedCanvasSize(desiredW, desiredW / aspectRatio).width;
+  }
+  return Math.min(MAX_RENDER_WIDTH, Math.round(desiredW));
 }
 
 export class PdfDocumentManager {
@@ -21,7 +62,8 @@ export class PdfDocumentManager {
   private activeRenderTasks = new Set<RenderTask>();
   private accessCounter = 0;
   private destroyed = false;
-  private readonly maxCachePages = 32;
+  private readonly maxCachePages = 10;
+  private readonly maxCachePixels = 28_000_000;
   private cachedAspectRatio = 1 / 1.414;
 
   async load(source: Blob | ArrayBuffer | Uint8Array): Promise<{ pageCount: number; aspectRatio: number }> {
@@ -72,31 +114,41 @@ export class PdfDocumentManager {
     return entry.canvas;
   }
 
+  private getCappedWidthForPage(targetPixelWidth: number, aspectRatio: number): number {
+    const safeAspect = aspectRatio > 0 ? aspectRatio : this.cachedAspectRatio;
+    const rawW = Math.max(320, Math.round(targetPixelWidth));
+    return getCappedCanvasSize(rawW, rawW / safeAspect).width;
+  }
+
   hasAdequateCache(pageNumber: number, targetPixelWidth: number): boolean {
-    const clampedWidth = Math.max(480, Math.min(1800, Math.round(targetPixelWidth)));
     const entry = this.cache.get(pageNumber);
-    return Boolean(entry && entry.renderWidth >= clampedWidth * 0.85);
+    if (!entry) return false;
+    const cappedWidth = this.getCappedWidthForPage(targetPixelWidth, entry.aspectRatio);
+    return entry.renderWidth >= cappedWidth * 0.96;
   }
 
   async renderPage(pageNumber: number, targetPixelWidth = 1200): Promise<HTMLCanvasElement | null> {
     if (this.destroyed || !this.pdfDoc) return null;
     if (pageNumber < 1 || pageNumber > this.pdfDoc.numPages) return null;
 
-    const clampedWidth = Math.max(480, Math.min(1800, Math.round(targetPixelWidth)));
     const existing = this.cache.get(pageNumber);
-    if (existing && existing.renderWidth >= clampedWidth * 0.85) {
+    const cappedWidth = this.getCappedWidthForPage(
+      targetPixelWidth,
+      existing?.aspectRatio ?? this.cachedAspectRatio,
+    );
+    if (existing && existing.renderWidth >= cappedWidth * 0.96) {
       existing.lastUsed = ++this.accessCounter;
       return existing.canvas;
     }
 
-    const key = `${pageNumber}:${clampedWidth}`;
+    const key = `${pageNumber}:${cappedWidth}`;
     const pending = this.inFlight.get(key);
     if (pending) {
       const entry = await pending;
       return entry.canvas;
     }
 
-    const promise = this.performRender(pageNumber, clampedWidth);
+    const promise = this.performRender(pageNumber, cappedWidth);
     this.inFlight.set(key, promise);
 
     try {
@@ -117,7 +169,10 @@ export class PdfDocumentManager {
 
     const page = await this.pdfDoc.getPage(pageNumber);
     const baseViewport = page.getViewport({ scale: 1 });
-    const scale = targetPixelWidth / baseViewport.width;
+    const aspectRatio =
+      baseViewport.height > 0 ? baseViewport.width / baseViewport.height : this.cachedAspectRatio;
+    const cappedW = this.getCappedWidthForPage(targetPixelWidth, aspectRatio);
+    const scale = cappedW / baseViewport.width;
     const viewport = page.getViewport({ scale });
 
     const canvas = document.createElement('canvas');
@@ -146,29 +201,54 @@ export class PdfDocumentManager {
     const entry: CachedPageEntry = {
       canvas,
       renderWidth: canvas.width,
-      aspectRatio: baseViewport.height > 0 ? baseViewport.width / baseViewport.height : this.cachedAspectRatio,
+      pixels: canvas.width * canvas.height,
+      aspectRatio,
       lastUsed: ++this.accessCounter,
     };
 
     if (!this.destroyed) {
+      const prev = this.cache.get(pageNumber);
+      if (prev && prev.canvas !== canvas) {
+        prev.canvas.width = 0;
+        prev.canvas.height = 0;
+      }
       this.cache.set(pageNumber, entry);
       this.evictIfNeeded();
+    } else {
+      canvas.width = 0;
+      canvas.height = 0;
     }
 
     return entry;
   }
 
-  private evictIfNeeded(): void {
-    if (this.cache.size <= this.maxCachePages) return;
-    let oldestPage: number | null = null;
-    let oldestTime = Infinity;
-    for (const [pageNum, entry] of this.cache.entries()) {
-      if (entry.lastUsed < oldestTime) {
-        oldestTime = entry.lastUsed;
-        oldestPage = pageNum;
-      }
+  private getTotalCachedPixels(): number {
+    let total = 0;
+    for (const entry of this.cache.values()) {
+      total += entry.pixels;
     }
-    if (oldestPage !== null) {
+    return total;
+  }
+
+  private evictIfNeeded(): void {
+    while (
+      this.cache.size > 2 &&
+      (this.cache.size > this.maxCachePages || this.getTotalCachedPixels() > this.maxCachePixels)
+    ) {
+      let oldestPage: number | null = null;
+      let oldestTime = Infinity;
+      for (const [pageNum, entry] of this.cache.entries()) {
+        if (entry.lastUsed < oldestTime) {
+          oldestTime = entry.lastUsed;
+          oldestPage = pageNum;
+        }
+      }
+      if (oldestPage === null) break;
+      const evicted = this.cache.get(oldestPage);
+      if (evicted) {
+        evicted.canvas.width = 0;
+        evicted.canvas.height = 0;
+      }
       this.cache.delete(oldestPage);
     }
   }
@@ -176,7 +256,7 @@ export class PdfDocumentManager {
   prefetchAround(centerPage: number, targetPixelWidth = 1200): void {
     if (this.destroyed || !this.pdfDoc) return;
     const total = this.pdfDoc.numPages;
-    const offsets = [0, 1, 2, 3, -1, -2, 4, 5, -3, -4];
+    const offsets = [0, 1, 2, -1, -2];
     const targets = offsets
       .map((off) => centerPage + off)
       .filter((p) => p >= 1 && p <= total && !this.hasAdequateCache(p, targetPixelWidth));
@@ -214,6 +294,10 @@ export class PdfDocumentManager {
       }
     }
     this.activeRenderTasks.clear();
+    for (const entry of this.cache.values()) {
+      entry.canvas.width = 0;
+      entry.canvas.height = 0;
+    }
     this.cache.clear();
     this.inFlight.clear();
     if (this.pdfDoc) {

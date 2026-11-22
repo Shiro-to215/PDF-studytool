@@ -30,7 +30,7 @@ export interface BookGestureCallbacks {
   onFlipMove: (clientX: number) => void;
   onFlipEnd: (clientX: number, velocityX: number) => void;
   onFlipCancel: (immediate?: boolean) => void;
-  onZoomPanLive: (scale: number, panX: number, panY: number) => void;
+  onZoomPanLive: (scale: number, panX: number, panY: number, focusX?: number, focusY?: number) => void;
   onZoomPanEnd: () => void;
   onWheelZoomAt: (factor: number, clientX: number, clientY: number) => void;
   onWheelPan: (dx: number, dy: number) => void;
@@ -231,13 +231,16 @@ export function useBookGestures(callbacks: BookGestureCallbacks) {
 
           const metrics = getPinchMetrics(t1, t2);
           const rawScale = orig.scale * (metrics.dist / orig.dist);
-          const nextScale = Math.max(0.85, Math.min(3.8, rawScale));
+          const nextScale =
+            rawScale > 8
+              ? Math.min(8.6, 8 + (rawScale - 8) * 0.22)
+              : Math.max(0.85, rawScale);
           const ratio = nextScale / orig.scale;
 
           const nextPanX = metrics.midOffsetX - ratio * (orig.midOffsetX - orig.panX);
           const nextPanY = metrics.midOffsetY - ratio * (orig.midOffsetY - orig.panY);
 
-          cb.onZoomPanLive(nextScale, nextPanX, nextPanY);
+          cb.onZoomPanLive(nextScale, nextPanX, nextPanY, metrics.midOffsetX, metrics.midOffsetY);
         }
         return;
       }

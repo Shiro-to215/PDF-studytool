@@ -231,7 +231,7 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
 
   setZoomPan: (scale, panX, panY) =>
     set({
-      scale: Math.max(0.85, Math.min(3.8, scale)),
+      scale: Math.max(0.85, Math.min(8.8, scale)),
       panX,
       panY,
     }),

@@ -1,5 +1,10 @@
-import { useLayoutEffect, useRef } from 'react';
-import { getIdealRenderWidth, type PdfDocumentManager } from '../../utils/pdfEngine';
+import { useEffect, useLayoutEffect, useRef } from 'react';
+import {
+  getCappedCanvasSize,
+  MAX_INK_CANVAS_PIXELS,
+  MAX_RENDER_WIDTH,
+  type PdfDocumentManager,
+} from '../../utils/pdfEngine';
 import type { Stroke } from '../../types/models';
 import { drawSingleStroke, renderStrokesToCanvas } from '../../utils/strokeRenderer';
 
@@ -36,10 +41,12 @@ export function PageSurface({
     const canvas = pdfCanvasRef.current;
     if (!canvas) return;
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
-    const qualityMult = Math.max(1, Math.min(2.2, renderScale));
-    const pixelW = Math.max(1, Math.round(width * dpr * qualityMult));
-    const pixelH = Math.max(1, Math.round(height * dpr * qualityMult));
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const qualityMult = Math.max(1, Math.min(8, renderScale));
+    const { width: pixelW, height: pixelH } = getCappedCanvasSize(
+      width * dpr * qualityMult,
+      height * dpr * qualityMult,
+    );
 
     if (canvas.width !== pixelW || canvas.height !== pixelH) {
       canvas.width = pixelW;
@@ -56,12 +63,14 @@ export function PageSurface({
     }
 
     const drawFromSource = (source: HTMLCanvasElement) => {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, pixelW, pixelH);
       ctx.drawImage(source, 0, 0, pixelW, pixelH);
     };
 
-    const targetRequestW = getIdealRenderWidth(width, renderScale);
+    const targetRequestW = pixelW;
     const cached = pdfManager.getCachedCanvas(pageNumber);
     if (cached) {
       drawFromSource(cached);
@@ -88,15 +97,52 @@ export function PageSurface({
     };
   }, [pageNumber, pdfManager, width, height, renderScale]);
 
+  // Immediately release WebKit canvas GPU backing memory on unmount
+  useEffect(() => {
+    const pdfCanvas = pdfCanvasRef.current;
+    const inkCanvas = inkCanvasRef.current;
+    const draftCanvas = draftCanvasRef.current;
+    return () => {
+      if (pdfCanvas) {
+        pdfCanvas.width = 0;
+        pdfCanvas.height = 0;
+      }
+      if (inkCanvas) {
+        inkCanvas.width = 0;
+        inkCanvas.height = 0;
+      }
+      if (draftCanvas) {
+        draftCanvas.width = 0;
+        draftCanvas.height = 0;
+      }
+    };
+  }, []);
+
   // Layer 2: Committed strokes only (never re-runs while actively drawing a draft stroke!)
   useLayoutEffect(() => {
     const canvas = inkCanvasRef.current;
     if (!canvas) return;
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
-    const qualityMult = Math.max(1, Math.min(2, renderScale));
-    const pixelW = Math.max(1, Math.round(width * dpr * qualityMult));
-    const pixelH = Math.max(1, Math.round(height * dpr * qualityMult));
+    // Avoid allocating multi-megabyte backing stores for pages with no visible strokes
+    if (pageNumber === null || hideInk || strokes.length === 0) {
+      if (canvas.width !== 1 || canvas.height !== 1) {
+        canvas.width = 1;
+        canvas.height = 1;
+      } else {
+        const ctx = canvas.getContext('2d');
+        ctx?.clearRect(0, 0, 1, 1);
+      }
+      return;
+    }
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const qualityMult = Math.max(1, Math.min(8, renderScale));
+    const { width: pixelW, height: pixelH } = getCappedCanvasSize(
+      width * dpr * qualityMult,
+      height * dpr * qualityMult,
+      MAX_RENDER_WIDTH,
+      MAX_INK_CANVAS_PIXELS,
+    );
 
     if (canvas.width !== pixelW || canvas.height !== pixelH) {
       canvas.width = pixelW;
@@ -105,11 +151,6 @@ export function PageSurface({
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-
-    if (pageNumber === null || hideInk) {
-      ctx.clearRect(0, 0, pixelW, pixelH);
-      return;
-    }
 
     renderStrokesToCanvas(ctx, strokes, pixelW, pixelH, {
       clear: true,
@@ -122,10 +163,26 @@ export function PageSurface({
     const canvas = draftCanvasRef.current;
     if (!canvas) return;
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
-    const qualityMult = Math.max(1, Math.min(2, renderScale));
-    const pixelW = Math.max(1, Math.round(width * dpr * qualityMult));
-    const pixelH = Math.max(1, Math.round(height * dpr * qualityMult));
+    // Release backing store whenever no stroke is actively being drawn
+    if (pageNumber === null || hideInk || !draftStroke) {
+      if (canvas.width !== 1 || canvas.height !== 1) {
+        canvas.width = 1;
+        canvas.height = 1;
+      } else {
+        const ctx = canvas.getContext('2d');
+        ctx?.clearRect(0, 0, 1, 1);
+      }
+      return;
+    }
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const qualityMult = Math.max(1, Math.min(8, renderScale));
+    const { width: pixelW, height: pixelH } = getCappedCanvasSize(
+      width * dpr * qualityMult,
+      height * dpr * qualityMult,
+      MAX_RENDER_WIDTH,
+      MAX_INK_CANVAS_PIXELS,
+    );
 
     if (canvas.width !== pixelW || canvas.height !== pixelH) {
       canvas.width = pixelW;
@@ -136,10 +193,6 @@ export function PageSurface({
     if (!ctx) return;
 
     ctx.clearRect(0, 0, pixelW, pixelH);
-    if (pageNumber === null || hideInk || !draftStroke) {
-      return;
-    }
-
     drawSingleStroke(ctx, draftStroke, pixelW, pixelH);
   }, [pageNumber, draftStroke, hideInk, width, height, renderScale]);
 

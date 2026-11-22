@@ -149,7 +149,11 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
     }, [stageSize, aspectRatio, spreadMode]);
 
     // ===== Native-feel GPU Zoom & Pan Controller =====
+    const MAX_ZOOM_SCALE = 8;
     const liveZoomRef = useRef({ scale: 1, panX: 0, panY: 0 });
+    const lastZoomFocusRef = useRef({ x: 0, y: 0 });
+    const committedScaleRef = useRef(committedScale);
+    committedScaleRef.current = committedScale;
     const zoomAnimRef = useRef<number | null>(null);
     const wheelSettleTimerRef = useRef<number | null>(null);
 
@@ -160,14 +164,32 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       }
     }, []);
 
-    // Quantize PDF backing-store re-renders to 0.5x steps so pure panning never triggers heavy canvas redraws
-    const quantizeCommittedScale = (s: number) =>
-      s <= 1.02 ? 1 : Math.min(2.2, Math.round(s * 2) / 2);
+    // Cap the DOM layout scale so the book's WebKit backing layer matches the maximum crisp
+    // PDF canvas pixels (~300 DPI) without blowing up into a giant 8x GPU tile layer (which
+    // causes iPadOS Safari OOM crashes when zooming back out to 1x).
+    const quantizeCommittedScale = useCallback(
+      (s: number) => {
+        if (s <= 1.02) return 1;
+        const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 3) : 1;
+        const maxW = spreadMode === 'double' ? 2100 : 2800;
+        const maxPixels = spreadMode === 'double' ? 5_800_000 : 9_500_000;
+        const basePxW = Math.max(1, pageW * dpr);
+        const basePxH = Math.max(1, pageH * dpr);
+        const maxByWidth = maxW / basePxW;
+        const maxByArea = Math.sqrt(maxPixels / (basePxW * basePxH));
+        const maxLayoutScale = Math.max(
+          1,
+          Math.min(dpr <= 1.25 ? 3.2 : 2.4, maxByWidth, maxByArea),
+        );
+        return Math.min(maxLayoutScale, Math.round(s * 1000) / 1000);
+      },
+      [pageW, pageH, spreadMode],
+    );
 
     const clampZoomPan = useCallback(
       (s: number, px: number, py: number, rubberBand: boolean) => {
         const minS = rubberBand ? 0.85 : 1;
-        const maxS = rubberBand ? 3.8 : 3.5;
+        const maxS = rubberBand ? 8.6 : MAX_ZOOM_SCALE;
         const clampedS = Math.max(minS, Math.min(maxS, s));
 
         if (clampedS <= 1.01) {
@@ -214,7 +236,16 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         liveZoomRef.current = { scale: s, panX: px, panY: py };
         const el = zoomWrapperRef.current;
         if (el) {
-          el.style.transform = `translate3d(${px.toFixed(2)}px, ${py.toFixed(2)}px, 0) scale(${s.toFixed(4)})`;
+          const residualScale = s / Math.max(0.01, committedScaleRef.current);
+          const needsScale = Math.abs(residualScale - 1) > 0.0005;
+          const needsTranslate = Math.abs(px) > 0.05 || Math.abs(py) > 0.05;
+          if (!needsScale && !needsTranslate) {
+            el.style.transform = 'none';
+          } else if (!needsScale) {
+            el.style.transform = `translate3d(${px.toFixed(2)}px, ${py.toFixed(2)}px, 0)`;
+          } else {
+            el.style.transform = `translate3d(${px.toFixed(2)}px, ${py.toFixed(2)}px, 0) scale(${residualScale.toFixed(4)})`;
+          }
           el.style.cursor =
             interactionMode === 'draw' ? 'crosshair' : s > 1.02 ? 'grab' : 'default';
         }
@@ -259,7 +290,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
 
         zoomAnimRef.current = requestAnimationFrame(tick);
       },
-      [stopZoomAnimation, applyZoomDom, setZoomPan],
+      [stopZoomAnimation, applyZoomDom, setZoomPan, quantizeCommittedScale],
     );
 
     // Keep DOM transform and cursor synced with liveZoomRef across any React re-render
@@ -275,6 +306,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       if (prev.page !== currentPage || prev.spread !== spreadMode) {
         prevPageSpreadRef.current = { page: currentPage, spread: spreadMode };
         stopZoomAnimation();
+        committedScaleRef.current = 1;
         applyZoomDom(1, 0, 0);
         setCommittedScale(1);
       }
@@ -299,9 +331,18 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
     }, [stopZoomAnimation]);
 
     const handleZoomPanLive = useCallback(
-      (nextS: number, nextX: number, nextY: number) => {
+      (nextS: number, nextX: number, nextY: number, focusX?: number, focusY?: number) => {
         stopZoomAnimation();
+        const prev = liveZoomRef.current;
         const clamped = clampZoomPan(nextS, nextX, nextY, true);
+        if (focusX !== undefined && focusY !== undefined) {
+          lastZoomFocusRef.current = { x: focusX, y: focusY };
+        } else if (clamped.scale > MAX_ZOOM_SCALE) {
+          lastZoomFocusRef.current = {
+            x: lastZoomFocusRef.current.x + (clamped.panX - prev.panX),
+            y: lastZoomFocusRef.current.y + (clamped.panY - prev.panY),
+          };
+        }
         applyZoomDom(clamped.scale, clamped.panX, clamped.panY);
       },
       [stopZoomAnimation, clampZoomPan, applyZoomDom],
@@ -311,10 +352,23 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       const cur = liveZoomRef.current;
       // Snap smoothly back to 100% if close to or below 1.04x
       if (cur.scale < 1.04) {
+        lastZoomFocusRef.current = { x: 0, y: 0 };
         animateZoomTo(1, 0, 0, 240);
         return;
       }
-      const clamped = clampZoomPan(cur.scale, cur.panX, cur.panY, false);
+
+      // If rubber-banding past MAX_ZOOM_SCALE, scale pan back around the exact pinch focal point
+      // so snapping back to 8x never drifts away from the spread center.
+      let targetPanX = cur.panX;
+      let targetPanY = cur.panY;
+      if (cur.scale > MAX_ZOOM_SCALE) {
+        const ratio = MAX_ZOOM_SCALE / cur.scale;
+        const { x: fx, y: fy } = lastZoomFocusRef.current;
+        targetPanX = fx - ratio * (fx - cur.panX);
+        targetPanY = fy - ratio * (fy - cur.panY);
+      }
+
+      const clamped = clampZoomPan(cur.scale, targetPanX, targetPanY, false);
       animateZoomTo(clamped.scale, clamped.panX, clamped.panY, 200);
     }, [animateZoomTo, clampZoomPan]);
 
@@ -338,10 +392,11 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         const midOffY = clientY - (rect.top + rect.height / 2);
 
         const cur = liveZoomRef.current;
-        const nextS = Math.max(0.92, Math.min(3.5, cur.scale * factor));
+        const nextS = Math.max(0.92, Math.min(MAX_ZOOM_SCALE, cur.scale * factor));
         const ratio = nextS / cur.scale;
         const nextX = midOffX - ratio * (midOffX - cur.panX);
         const nextY = midOffY - ratio * (midOffY - cur.panY);
+        lastZoomFocusRef.current = { x: midOffX, y: midOffY };
 
         const clamped = clampZoomPan(nextS, nextX, nextY, true);
         applyZoomDom(clamped.scale, clamped.panX, clamped.panY);
@@ -380,8 +435,8 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
     // Prefetch surrounding PDF pages using the exact same ideal resolution as PageSurface
     useEffect(() => {
       if (!pdfManager) return;
-      pdfManager.prefetchAround(currentPage, getIdealRenderWidth(pageW, 1));
-    }, [pdfManager, currentPage, pageW]);
+      pdfManager.prefetchAround(currentPage, getIdealRenderWidth(pageW, 1, aspectRatio));
+    }, [pdfManager, currentPage, pageW, aspectRatio]);
 
     // Optimistic local stroke cache so strokes appear instantly with 0ms lag/flicker
     // and rapid consecutive strokes never overwrite each other before IndexedDB finishes.
@@ -1030,6 +1085,13 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
     const canGoLeft = leftArrowIsPrev ? prevTargetPage !== null : nextTargetPage !== null;
     const canGoRight = leftArrowIsPrev ? nextTargetPage !== null : prevTargetPage !== null;
 
+    // Layout dimensions scaled by committedScale so settled zoom renders at 1:1 native Retina pixels
+    const scaledPageW = Math.max(1, Math.round(pageW * committedScale));
+    const scaledPageH = Math.max(1, Math.round(pageH * committedScale));
+    const scaledBookW = scaledPageW * (spreadMode === 'double' ? 2 : 1);
+    const scaledBookH = scaledPageH;
+    const isFlipping = flipSession !== null;
+
     return (
       <div
         ref={stageRef}
@@ -1065,21 +1127,25 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         {/* Zoom / Pan wrapper (transform managed imperatively for 60/120fps) */}
         <div
           ref={zoomWrapperRef}
-          className="book-perspective flex items-center justify-center will-change-transform"
+          className={`shrink-0 flex items-center justify-center ${
+            isFlipping ? 'book-perspective will-change-transform' : ''
+          }`}
           style={{
             transformOrigin: 'center center',
           }}
         >
           <div
             ref={bookRef}
-            className="relative preserve-3d rounded-lg shadow-[0_14px_40px_-14px_rgba(15,23,42,0.22)] ring-1 ring-black/8 dark:ring-white/10"
-            style={{ width: bookW, height: bookH }}
+            className={`relative rounded-lg shadow-[0_14px_40px_-14px_rgba(15,23,42,0.22)] ring-1 ring-black/8 dark:ring-white/10 ${
+              isFlipping ? 'preserve-3d' : ''
+            }`}
+            style={{ width: scaledBookW, height: scaledBookH }}
           >
             {/* === DOUBLE SPREAD MODE === */}
             {spreadMode === 'double' && (
-              <div className="relative w-full h-full flex preserve-3d">
+              <div className={`relative w-full h-full flex ${isFlipping ? 'preserve-3d' : ''}`}>
                 {/* Left static page */}
-                <div className="relative rounded-l-lg overflow-hidden border-r border-black/10" style={{ width: pageW, height: pageH }}>
+                <div className="relative rounded-l-lg overflow-hidden border-r border-black/10" style={{ width: scaledPageW, height: scaledPageH }}>
                   <PageSurface
                     pageNumber={
                       flipSession?.mode === 'double'
@@ -1087,8 +1153,8 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         : layout.leftPage
                     }
                     pdfManager={pdfManager}
-                    width={pageW}
-                    height={pageH}
+                    width={scaledPageW}
+                    height={scaledPageH}
                     strokes={getStrokesForPage(
                       flipSession?.mode === 'double' ? flipSession.staticLeft : layout.leftPage,
                     )}
@@ -1098,7 +1164,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         : getDraftForPage(layout.leftPage)
                     }
                     hideInk={allInkHidden}
-                    renderScale={committedScale}
+                    renderScale={1}
                   />
                   <div className="absolute inset-0 spine-shadow-left pointer-events-none" />
                   {flipSession?.mode === 'double' && flipSession.leafSide === 'left' && (
@@ -1111,7 +1177,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                 </div>
 
                 {/* Right static page */}
-                <div className="relative rounded-r-lg overflow-hidden" style={{ width: pageW, height: pageH }}>
+                <div className="relative rounded-r-lg overflow-hidden" style={{ width: scaledPageW, height: scaledPageH }}>
                   <PageSurface
                     pageNumber={
                       flipSession?.mode === 'double'
@@ -1119,8 +1185,8 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         : layout.rightPage
                     }
                     pdfManager={pdfManager}
-                    width={pageW}
-                    height={pageH}
+                    width={scaledPageW}
+                    height={scaledPageH}
                     strokes={getStrokesForPage(
                       flipSession?.mode === 'double' ? flipSession.staticRight : layout.rightPage,
                     )}
@@ -1130,7 +1196,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         : getDraftForPage(layout.rightPage)
                     }
                     hideInk={allInkHidden}
-                    renderScale={committedScale}
+                    renderScale={1}
                   />
                   <div className="absolute inset-0 spine-shadow-right pointer-events-none" />
                   {flipSession?.mode === 'double' && flipSession.leafSide === 'right' && (
@@ -1152,9 +1218,9 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         flipSession.leafSide === 'right' ? 'rounded-r-lg' : 'rounded-l-lg'
                       }`}
                       style={{
-                        width: pageW,
-                        height: pageH,
-                        left: flipSession.leafSide === 'right' ? pageW : 0,
+                        width: scaledPageW,
+                        height: scaledPageH,
+                        left: flipSession.leafSide === 'right' ? scaledPageW : 0,
                         transformOrigin:
                           flipSession.leafSide === 'right' ? 'left center' : 'right center',
                       }}
@@ -1162,11 +1228,11 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                       <PageSurface
                         pageNumber={flipSession.leafFront}
                         pdfManager={pdfManager}
-                        width={pageW}
-                        height={pageH}
+                        width={scaledPageW}
+                        height={scaledPageH}
                         strokes={getStrokesForPage(flipSession.leafFront)}
                         hideInk={allInkHidden}
-                        renderScale={committedScale}
+                        renderScale={1}
                       />
                       <div
                         className={`absolute inset-0 pointer-events-none ${
@@ -1187,9 +1253,9 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         flipSession.leafSide === 'right' ? 'rounded-l-lg' : 'rounded-r-lg'
                       }`}
                       style={{
-                        width: pageW,
-                        height: pageH,
-                        left: flipSession.leafSide === 'right' ? 0 : pageW,
+                        width: scaledPageW,
+                        height: scaledPageH,
+                        left: flipSession.leafSide === 'right' ? 0 : scaledPageW,
                         transformOrigin:
                           flipSession.leafSide === 'right' ? 'right center' : 'left center',
                         display: 'none',
@@ -1198,11 +1264,11 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                       <PageSurface
                         pageNumber={flipSession.leafBack}
                         pdfManager={pdfManager}
-                        width={pageW}
-                        height={pageH}
+                        width={scaledPageW}
+                        height={scaledPageH}
                         strokes={getStrokesForPage(flipSession.leafBack)}
                         hideInk={allInkHidden}
-                        renderScale={committedScale}
+                        renderScale={1}
                       />
                       <div
                         className={`absolute inset-0 pointer-events-none ${
@@ -1222,7 +1288,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
 
             {/* === SINGLE PAGE MODE === */}
             {spreadMode === 'single' && (
-              <div className="relative w-full h-full preserve-3d rounded-lg">
+              <div className={`relative w-full h-full rounded-lg ${isFlipping ? 'preserve-3d' : ''}`}>
                 {/* Underlying static page */}
                 <div className="relative w-full h-full rounded-lg overflow-hidden">
                   <PageSurface
@@ -1232,8 +1298,8 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         : layout.leftPage
                     }
                     pdfManager={pdfManager}
-                    width={pageW}
-                    height={pageH}
+                    width={scaledPageW}
+                    height={scaledPageH}
                     strokes={getStrokesForPage(
                       flipSession?.mode === 'single' ? flipSession.underPage : layout.leftPage,
                     )}
@@ -1243,7 +1309,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         : getDraftForPage(layout.leftPage)
                     }
                     hideInk={allInkHidden}
-                    renderScale={committedScale}
+                    renderScale={1}
                   />
                   <div
                     className={`absolute inset-0 pointer-events-none ${
@@ -1273,11 +1339,11 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                       <PageSurface
                         pageNumber={flipSession.leafPage}
                         pdfManager={pdfManager}
-                        width={pageW}
-                        height={pageH}
+                        width={scaledPageW}
+                        height={scaledPageH}
                         strokes={getStrokesForPage(flipSession.leafPage)}
                         hideInk={allInkHidden}
-                        renderScale={committedScale}
+                        renderScale={1}
                       />
                       <div
                         className={`absolute inset-0 pointer-events-none ${
