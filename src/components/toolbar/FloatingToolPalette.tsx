@@ -320,14 +320,12 @@ export function FloatingToolPalette({
     const origin = flipOriginRef.current;
     if (origin) {
       flipOriginRef.current = null;
-      const isHorizontalExpand =
-        origin.wasCollapsed &&
-        !paletteState.collapsed &&
-        (paletteState.dock === 'top' || paletteState.dock === 'bottom');
+      const isExpand = origin.wasCollapsed && !paletteState.collapsed;
 
-      if (isHorizontalExpand) {
-        const sx = Math.max(0.16, Math.min(1, origin.w / Math.max(1, elW)));
-        const sy = Math.max(0.85, Math.min(1, origin.h / Math.max(1, elH)));
+      if (isExpand) {
+        const isVert = paletteState.dock === 'left' || paletteState.dock === 'right';
+        const sx = Math.max(isVert ? 0.85 : 0.16, Math.min(1, origin.w / Math.max(1, elW)));
+        const sy = Math.max(isVert ? 0.16 : 0.85, Math.min(1, origin.h / Math.max(1, elH)));
         const visW = elW * sx;
         const visH = elH * sy;
         const halfWDiff = (elW - visW) / 2;

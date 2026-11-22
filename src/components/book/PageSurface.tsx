@@ -203,15 +203,15 @@ export function PageSurface({
     >
       <canvas
         ref={pdfCanvasRef}
-        className="absolute inset-0 w-full h-full block pointer-events-none"
+        className="absolute inset-0 w-full h-full block pointer-events-none rounded-[inherit]"
       />
       <canvas
         ref={inkCanvasRef}
-        className="absolute inset-0 w-full h-full block pointer-events-none"
+        className="absolute inset-0 w-full h-full block pointer-events-none rounded-[inherit]"
       />
       <canvas
         ref={draftCanvasRef}
-        className="absolute inset-0 w-full h-full block pointer-events-none"
+        className="absolute inset-0 w-full h-full block pointer-events-none rounded-[inherit]"
       />
     </div>
   );

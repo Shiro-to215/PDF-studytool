@@ -1318,16 +1318,17 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                     }
                     hideInk={allInkHidden}
                     renderScale={1}
+                    className="rounded-lg"
                   />
                   <div
-                    className={`absolute inset-0 pointer-events-none ${
+                    className={`absolute inset-0 rounded-lg pointer-events-none ${
                       bindingDirection === 'ltr' ? 'spine-shadow-right' : 'spine-shadow-left'
                     }`}
                   />
                   {flipSession?.mode === 'single' && (
                     <div
                       ref={underShadowRef}
-                      className="absolute inset-0 bg-black pointer-events-none"
+                      className="absolute inset-0 rounded-lg bg-black pointer-events-none"
                       style={{ opacity: 0 }}
                     />
                   )}
@@ -1352,15 +1353,16 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         strokes={getStrokesForPage(flipSession.leafPage)}
                         hideInk={allInkHidden}
                         renderScale={1}
+                        className="rounded-lg"
                       />
                       <div
-                        className={`absolute inset-0 pointer-events-none ${
+                        className={`absolute inset-0 rounded-lg pointer-events-none ${
                           flipSession.hingeSide === 'left' ? 'spine-shadow-right' : 'spine-shadow-left'
                         }`}
                       />
                       <div
                         ref={frontShadeRef}
-                        className="absolute inset-0 bg-slate-900 pointer-events-none"
+                        className="absolute inset-0 rounded-lg bg-slate-900 pointer-events-none"
                         style={{ opacity: 0 }}
                       />
                     </div>
