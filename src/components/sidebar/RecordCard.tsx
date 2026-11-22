@@ -1,4 +1,10 @@
-import { useEffect, useState } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type TextareaHTMLAttributes,
+} from 'react';
 import {
   ChevronRight,
   Eye,
@@ -45,6 +51,32 @@ const ACTIVE_STATUS_BUTTON_CLASS: Record<StudyStatus, string> = {
   weak: 'bg-rose-500/18 text-rose-800 dark:text-rose-200 border-rose-500/45',
   done: 'bg-emerald-500/18 text-emerald-800 dark:text-emerald-200 border-emerald-500/45',
 };
+
+/** 1-row slim textarea that grows smoothly with content */
+function AutoGrowTextarea({
+  value,
+  className = '',
+  ...rest
+}: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.max(38, el.scrollHeight)}px`;
+  }, [value]);
+
+  return (
+    <textarea
+      ref={ref}
+      rows={1}
+      value={value}
+      className={`w-full resize-none overflow-hidden rounded-xl border border-base-300 px-3 py-2 text-sm leading-relaxed focus:outline-none focus:border-primary transition-colors ${className}`}
+      {...rest}
+    />
+  );
+}
 
 export function RecordCard({
   recordKey,
@@ -212,9 +244,9 @@ export function RecordCard({
         </span>
       </button>
 
-      {/* Expandable Details (Status + Miss Reasons + Hints + Compact Answer + Memo) */}
+      {/* Expandable Details (Status + Miss Reasons + Hints + Answer + Memo) */}
       {detailsOpen && (
-        <div className="px-4 pb-4 pt-3.5 border-t border-base-300 space-y-4">
+        <div className="px-4 pb-4 pt-3.5 border-t border-base-300 space-y-3.5">
           {/* Flex-expanding Status Selector (active button grows wider & bolder) */}
           <div className="flex items-center gap-1.5 p-1 rounded-xl bg-base-200 border border-base-300">
             {STATUS_ORDER.map((st) => {
@@ -239,15 +271,15 @@ export function RecordCard({
           {/* Miss Reason Tags (Only shown when status is 'review' or 'weak') */}
           {showMissReasons && (
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-base-content/60">
-                  ミス原因タグ
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-base-content/65">
+                  ミス原因
                 </span>
                 {!addingReason && (
                   <button
                     type="button"
                     onClick={() => setAddingReason(true)}
-                    className="text-xs text-base-content/60 hover:text-primary flex items-center gap-0.5"
+                    className="h-8 px-2.5 rounded-lg bg-base-200/80 hover:bg-base-200 text-xs font-medium text-base-content/75 hover:text-primary flex items-center gap-1 transition-colors"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     追加
@@ -262,7 +294,7 @@ export function RecordCard({
                       key={reason}
                       type="button"
                       onClick={() => toggleReason(reason)}
-                      className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                      className={`h-8 px-3 rounded-full text-xs font-medium border transition-colors ${
                         selected
                           ? 'bg-primary text-primary-content border-primary'
                           : 'bg-base-200/70 text-base-content/75 border-base-300 hover:bg-base-200'
@@ -280,7 +312,7 @@ export function RecordCard({
                     autoFocus
                     value={reasonDraft}
                     onChange={(e) => setReasonDraft(e.target.value)}
-                    placeholder="新しい原因タグ..."
+                    placeholder="原因名"
                     className="input input-bordered input-sm flex-1 text-sm"
                   />
                   <button type="submit" className="btn btn-primary btn-sm">
@@ -301,18 +333,18 @@ export function RecordCard({
             </div>
           )}
 
-          {/* Hints (Tap to Reveal / Hide) */}
+          {/* Hints */}
           <div className="space-y-2 pt-3 border-t border-base-300">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-base-content/60 flex items-center gap-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-base-content/65 flex items-center gap-1.5">
                 <Lightbulb className="w-4 h-4" />
-                ヒント（タップで表示）
+                ヒント
               </span>
               {!addingHint && (
                 <button
                   type="button"
                   onClick={() => setAddingHint(true)}
-                  className="text-xs text-primary hover:underline flex items-center gap-0.5"
+                  className="h-8 px-2.5 rounded-lg bg-primary/10 hover:bg-primary/18 text-xs font-medium text-primary flex items-center gap-1 transition-colors"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   追加
@@ -320,97 +352,90 @@ export function RecordCard({
               )}
             </div>
 
-            {values.hints.length === 0 && !addingHint && (
-              <p className="text-xs text-base-content/45">ヒントはまだ登録されていません</p>
-            )}
-
-            <div className="space-y-2">
-              {values.hints.map((hint, idx) => {
-                const revealed = revealedHints.has(idx);
-                const isEditing = editingHintIdx === idx;
-                return (
-                  <div
-                    key={idx}
-                    className="rounded-xl border border-base-300 bg-base-200/50 p-3 transition-colors hover:border-base-content/25"
-                  >
-                    <div className="flex items-center justify-between gap-2 text-xs text-base-content/60 mb-1.5">
-                      <button
-                        type="button"
-                        onClick={() => toggleHintReveal(idx)}
-                        disabled={isEditing}
-                        className="flex items-center gap-1.5 hover:text-base-content disabled:opacity-70"
-                      >
-                        {revealed ? (
-                          <EyeOff className="w-3.5 h-3.5" />
-                        ) : (
-                          <Eye className="w-3.5 h-3.5" />
-                        )}
-                        <span>ヒント {idx + 1}</span>
-                      </button>
-                      <div className="flex items-center gap-0.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (isEditing) {
-                              setEditingHintIdx(null);
-                              setEditingHintDraft('');
-                            } else {
-                              handleStartEditHint(idx);
-                            }
-                          }}
-                          className={`p-1.5 rounded-lg transition-colors ${
-                            isEditing
-                              ? 'text-primary bg-primary/10'
-                              : 'text-base-content/55 hover:text-base-content hover:bg-base-300/60'
-                          }`}
-                          title="ヒントを編集"
-                          aria-label="ヒントを編集"
-                        >
-                          <Pencil className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteHint(idx)}
-                          className="p-1.5 rounded-lg text-base-content/55 hover:text-error hover:bg-error/10 transition-colors"
-                          title="ヒントを削除"
-                          aria-label="ヒントを削除"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {isEditing ? (
-                      <form onSubmit={handleSaveEditHint} className="space-y-2 pt-1">
-                        <textarea
-                          autoFocus
-                          rows={2}
-                          value={editingHintDraft}
-                          onChange={(e) => setEditingHintDraft(e.target.value)}
-                          placeholder="ヒントの内容を入力..."
-                          className="textarea textarea-bordered textarea-sm w-full text-sm leading-relaxed"
-                        />
-                        <div className="flex justify-end gap-1.5">
+            {values.hints.length > 0 && (
+              <div className="space-y-2">
+                {values.hints.map((hint, idx) => {
+                  const revealed = revealedHints.has(idx);
+                  const isEditing = editingHintIdx === idx;
+                  return (
+                    <div
+                      key={idx}
+                      onClick={!isEditing ? () => toggleHintReveal(idx) : undefined}
+                      className={`rounded-xl border border-base-300 bg-base-200/50 p-3 transition-colors ${
+                        isEditing ? '' : 'cursor-pointer hover:border-base-content/25'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <span className="flex items-center gap-1.5 text-xs font-medium text-base-content/60">
+                          {revealed ? (
+                            <EyeOff className="w-3.5 h-3.5" />
+                          ) : (
+                            <Eye className="w-3.5 h-3.5" />
+                          )}
+                          <span>ヒント {idx + 1}</span>
+                        </span>
+                        <div className="flex items-center gap-1 shrink-0">
                           <button
                             type="button"
-                            onClick={() => {
-                              setEditingHintIdx(null);
-                              setEditingHintDraft('');
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (isEditing) {
+                                setEditingHintIdx(null);
+                                setEditingHintDraft('');
+                              } else {
+                                handleStartEditHint(idx);
+                              }
                             }}
-                            className="btn btn-ghost btn-sm"
+                            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                              isEditing
+                                ? 'text-primary bg-primary/15'
+                                : 'text-base-content/60 hover:text-base-content hover:bg-base-300/70'
+                            }`}
+                            title="ヒントを編集"
+                            aria-label="ヒントを編集"
                           >
-                            キャンセル
+                            <Pencil className="w-4 h-4" />
                           </button>
-                          <button type="submit" className="btn btn-primary btn-sm">
-                            保存
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteHint(idx);
+                            }}
+                            className="w-8 h-8 rounded-lg flex items-center justify-center text-base-content/60 hover:text-error hover:bg-error/10 transition-colors"
+                            title="ヒントを削除"
+                            aria-label="ヒントを削除"
+                          >
+                            <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
-                      </form>
-                    ) : (
-                      <div
-                        onClick={() => toggleHintReveal(idx)}
-                        className="cursor-pointer"
-                      >
+                      </div>
+
+                      {isEditing ? (
+                        <form onSubmit={handleSaveEditHint} className="space-y-2 pt-1">
+                          <AutoGrowTextarea
+                            autoFocus
+                            value={editingHintDraft}
+                            onChange={(e) => setEditingHintDraft(e.target.value)}
+                            className="bg-base-100"
+                          />
+                          <div className="flex justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingHintIdx(null);
+                                setEditingHintDraft('');
+                              }}
+                              className="btn btn-ghost btn-sm"
+                            >
+                              キャンセル
+                            </button>
+                            <button type="submit" className="btn btn-primary btn-sm">
+                              保存
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
                         <p
                           className={`text-sm leading-relaxed whitespace-pre-wrap spoiler-blur ${
                             revealed ? 'revealed' : ''
@@ -418,22 +443,20 @@ export function RecordCard({
                         >
                           {hint}
                         </p>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
             {addingHint && (
               <form onSubmit={handleAddHint} className="space-y-2 pt-1">
-                <textarea
+                <AutoGrowTextarea
                   autoFocus
-                  rows={2}
                   value={hintDraft}
                   onChange={(e) => setHintDraft(e.target.value)}
-                  placeholder="詰まったときに見たい方針や着眼点..."
-                  className="textarea textarea-bordered textarea-sm w-full text-sm leading-relaxed"
+                  className="bg-base-100"
                 />
                 <div className="flex justify-end gap-1.5">
                   <button
@@ -454,18 +477,18 @@ export function RecordCard({
             )}
           </div>
 
-          {/* Compact Answer */}
+          {/* Answer */}
           <div className="space-y-2 pt-3 border-t border-base-300">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-base-content/60">
-                コンパクト答え
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-base-content/65">
+                答え
               </span>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
                 {!editingAnswer && values.compactAnswer && (
                   <button
                     type="button"
                     onClick={() => setAnswerRevealed((v) => !v)}
-                    className="text-xs text-primary hover:underline flex items-center gap-1"
+                    className="h-8 px-2.5 rounded-lg bg-primary/10 hover:bg-primary/18 text-xs font-medium text-primary flex items-center gap-1 transition-colors"
                   >
                     {answerRevealed ? (
                       <>
@@ -486,7 +509,11 @@ export function RecordCard({
                     setAnswerDraft(values.compactAnswer);
                     setEditingAnswer((v) => !v);
                   }}
-                  className="text-xs text-base-content/65 hover:text-base-content flex items-center gap-1"
+                  className={`h-8 px-2.5 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors ${
+                    editingAnswer
+                      ? 'bg-primary/15 text-primary'
+                      : 'bg-base-200/80 hover:bg-base-200 text-base-content/75 hover:text-base-content'
+                  }`}
                 >
                   <Pencil className="w-3.5 h-3.5" />
                   編集
@@ -496,13 +523,11 @@ export function RecordCard({
 
             {editingAnswer ? (
               <div className="space-y-2">
-                <textarea
+                <AutoGrowTextarea
                   autoFocus
-                  rows={2}
                   value={answerDraft}
                   onChange={(e) => setAnswerDraft(e.target.value)}
-                  placeholder="例：(1) a = 3.0 m/s²  (2) f = 9.0 N"
-                  className="textarea textarea-bordered textarea-sm w-full font-mono text-sm"
+                  className="bg-base-100 font-mono"
                 />
                 <div className="flex justify-end gap-1.5">
                   <button
@@ -524,7 +549,7 @@ export function RecordCard({
             ) : values.compactAnswer ? (
               <div
                 onClick={() => setAnswerRevealed((v) => !v)}
-                className="p-3 rounded-xl border border-base-300 bg-base-200/50 cursor-pointer"
+                className="p-3 rounded-xl border border-base-300 bg-base-200/50 cursor-pointer hover:border-base-content/25 transition-colors"
               >
                 <p
                   className={`text-sm font-mono leading-relaxed whitespace-pre-wrap spoiler-blur ${
@@ -534,20 +559,15 @@ export function RecordCard({
                   {values.compactAnswer}
                 </p>
               </div>
-            ) : (
-              <p className="text-xs text-base-content/45">
-                答えは未登録です（右上の「編集」またはCSV/JSONから登録）
-              </p>
-            )}
+            ) : null}
           </div>
 
-          {/* Free Memo */}
+          {/* Memo (1-row slim, auto-grows with content) */}
           <div className="space-y-2 pt-3 border-t border-base-300">
-            <span className="text-xs font-medium text-base-content/60 block">
+            <span className="text-xs font-semibold text-base-content/65 block">
               メモ
             </span>
-            <textarea
-              rows={2}
+            <AutoGrowTextarea
               value={memoDraft}
               onChange={(e) => setMemoDraft(e.target.value)}
               onBlur={() => {
@@ -555,8 +575,7 @@ export function RecordCard({
                   void onPatch({ memo: memoDraft });
                 }
               }}
-              placeholder="気づきや解き直しのメモ..."
-              className="textarea textarea-bordered textarea-sm w-full text-sm leading-relaxed bg-base-200/35"
+              className="bg-base-200/40"
             />
           </div>
         </div>
