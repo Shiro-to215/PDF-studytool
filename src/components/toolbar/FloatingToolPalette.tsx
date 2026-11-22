@@ -235,7 +235,6 @@ export function FloatingToolPalette({
     spreadMode,
     bindingDirection,
     coverSinglePage,
-    selectedSpreadSide,
     scale,
     resetZoom,
   } = useViewerStore();
@@ -579,16 +578,16 @@ export function FloatingToolPalette({
     bindingDirection,
     coverSinglePage,
   );
-  const targetPage =
+  const visiblePages =
     spreadMode === 'single'
-      ? layout.leftPage ?? currentPage
-      : selectedSpreadSide === 'left'
-        ? layout.leftPage ?? layout.rightPage ?? currentPage
-        : layout.rightPage ?? layout.leftPage ?? currentPage;
+      ? layout.leftPage !== null
+        ? [layout.leftPage]
+        : []
+      : [layout.leftPage, layout.rightPage].filter((p): p is number => p !== null);
 
-  const historyKey = `${workbookId}:${targetPage}:${activeLayer}`;
-  const undoEnabled = canUndo(historyKey);
-  const redoEnabled = canRedo(historyKey);
+  const historyKey = `${workbookId}:${activeLayer}`;
+  const undoEnabled = canUndo(historyKey, visiblePages);
+  const redoEnabled = canRedo(historyKey, visiblePages);
 
   const colorList = tool === 'marker' ? MARKER_COLOR_OPTIONS : PEN_COLOR_OPTIONS;
   const activeColor = tool === 'marker' ? markerColor : penColor;

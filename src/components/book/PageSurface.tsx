@@ -6,7 +6,7 @@ import {
   type PdfDocumentManager,
 } from '../../utils/pdfEngine';
 import type { Stroke } from '../../types/models';
-import { drawSingleStroke, renderStrokesToCanvas } from '../../utils/strokeRenderer';
+import { renderStrokesToCanvas } from '../../utils/strokeRenderer';
 
 interface PageSurfaceProps {
   pageNumber: number | null;
@@ -14,12 +14,14 @@ interface PageSurfaceProps {
   width: number;
   height: number;
   strokes: Stroke[];
-  draftStroke?: Stroke | null;
+  draftStrokes?: Stroke[];
   hideInk?: boolean;
   /** Render a slightly higher resolution backing store for crisp zoom */
   renderScale?: number;
   className?: string;
 }
+
+const EMPTY_STROKES: Stroke[] = [];
 
 export function PageSurface({
   pageNumber,
@@ -27,7 +29,7 @@ export function PageSurface({
   width,
   height,
   strokes,
-  draftStroke = null,
+  draftStrokes = EMPTY_STROKES,
   hideInk = false,
   renderScale = 1,
   className = '',
@@ -158,13 +160,13 @@ export function PageSurface({
     });
   }, [pageNumber, strokes, hideInk, width, height, renderScale]);
 
-  // Layer 3: Active in-progress stroke only (constant O(1) cost regardless of total stroke count)
+  // Layer 3: Active in-progress stroke(s) only (constant O(1) cost regardless of total stroke count)
   useLayoutEffect(() => {
     const canvas = draftCanvasRef.current;
     if (!canvas) return;
 
     // Release backing store whenever no stroke is actively being drawn
-    if (pageNumber === null || hideInk || !draftStroke) {
+    if (pageNumber === null || hideInk || draftStrokes.length === 0) {
       if (canvas.width !== 1 || canvas.height !== 1) {
         canvas.width = 1;
         canvas.height = 1;
@@ -192,9 +194,11 @@ export function PageSurface({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    ctx.clearRect(0, 0, pixelW, pixelH);
-    drawSingleStroke(ctx, draftStroke, pixelW, pixelH);
-  }, [pageNumber, draftStroke, hideInk, width, height, renderScale]);
+    renderStrokesToCanvas(ctx, draftStrokes, pixelW, pixelH, {
+      clear: true,
+      multiplyMarkers: false,
+    });
+  }, [pageNumber, draftStrokes, hideInk, width, height, renderScale]);
 
   return (
     <div

@@ -79,6 +79,10 @@ export interface Stroke {
   color: string;
   size: number;
   points: StrokePoint[];
+  /** Shared ID linking split segments of a single cross-spread stroke */
+  groupId?: string;
+  /** Optional geometry hint for crisp uniform rendering of auto-snapped shapes */
+  shapeKind?: 'line' | 'ellipse';
 }
 
 export interface PageStrokes {

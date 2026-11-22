@@ -9,10 +9,17 @@ import {
   useState,
 } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import type { PageStrokes, Stroke } from '../../types/models';
+import type { PageStrokes, Stroke, StrokePoint } from '../../types/models';
 import { createId, savePageStrokes } from '../../db/database';
 import { getIdealRenderWidth, PdfDocumentManager } from '../../utils/pdfEngine';
 import { isPointNearStroke } from '../../utils/strokeRenderer';
+import {
+  recognizeHoldShape,
+  sampleShapeToBookPoints,
+  splitBookPointsToPages,
+  updateSnappedShape,
+  type SnappedShape,
+} from '../../utils/shapeSnap';
 import {
   getNextSpreadPage,
   getPrevSpreadPage,
@@ -22,6 +29,7 @@ import {
 import {
   SIZE_OPTIONS,
   useToolStore,
+  type PageStrokesSnapshot,
 } from '../../stores/useToolStore';
 import { useBookGestures, type DrawMoveSample } from '../../hooks/useBookGestures';
 import { PageSurface } from './PageSurface';
@@ -718,22 +726,93 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       return () => stopFlipAnimation();
     }, [stopFlipAnimation]);
 
-    // ===== Ink Drawing State =====
-    const [draftStroke, setDraftStroke] = useState<{
-      pageNumber: number;
-      stroke: Stroke;
+    // ===== Ink Drawing State (supports cross-spread strokes & 0.6s hold-to-snap shapes) =====
+    const HOLD_SNAP_MS = 600;
+    const HOLD_STATIONARY_PX = 10;
+
+    const [draftStrokesByPage, setDraftStrokesByPage] = useState<Record<number, Stroke[]>>({});
+    const draftSessionRef = useRef<{
+      tool: 'pen' | 'marker';
+      color: string;
+      size: number;
+      rawBookPoints: StrokePoint[];
+      holdAnchorClient: { x: number; y: number };
+      snappedShape: SnappedShape | null;
     } | null>(null);
-    const activeDrawPageRef = useRef<number | null>(null);
-    const draftStrokeRef = useRef<Stroke | null>(null);
+    const holdTimerRef = useRef<number | null>(null);
     const eraserWorkingRef = useRef<{
-      pageNumber: number;
-      initialStrokes: Stroke[];
-      currentStrokes: Stroke[];
+      initialByPage: PageStrokesSnapshot;
+      currentByPage: PageStrokesSnapshot;
       changed: boolean;
     } | null>(null);
 
+    const clearHoldTimer = useCallback(() => {
+      if (holdTimerRef.current !== null) {
+        window.clearTimeout(holdTimerRef.current);
+        holdTimerRef.current = null;
+      }
+    }, []);
+
+    useEffect(() => {
+      return () => clearHoldTimer();
+    }, [clearHoldTimer]);
+
+    const buildDraftByPage = useCallback(
+      (
+        bookPoints: StrokePoint[],
+        spec: { tool: 'pen' | 'marker'; color: string; size: number },
+        shapeKind?: 'line' | 'ellipse',
+      ): Record<number, Stroke[]> => {
+        const segments = splitBookPointsToPages(
+          bookPoints,
+          spreadMode,
+          layout.leftPage,
+          layout.rightPage,
+        );
+        const byPage: Record<number, Stroke[]> = {};
+        for (let i = 0; i < segments.length; i++) {
+          const seg = segments[i];
+          const draft: Stroke = {
+            id: `draft-${seg.pageNumber}-${i}`,
+            tool: spec.tool,
+            color: spec.color,
+            size: spec.size,
+            points: seg.points,
+            shapeKind,
+          };
+          if (!byPage[seg.pageNumber]) {
+            byPage[seg.pageNumber] = [draft];
+          } else {
+            byPage[seg.pageNumber].push(draft);
+          }
+        }
+        return byPage;
+      },
+      [spreadMode, layout.leftPage, layout.rightPage],
+    );
+
+    const scheduleHoldSnap = useCallback(() => {
+      clearHoldTimer();
+      holdTimerRef.current = window.setTimeout(() => {
+        holdTimerRef.current = null;
+        const session = draftSessionRef.current;
+        if (!session || session.snappedShape) return;
+
+        const shape = recognizeHoldShape(session.rawBookPoints, bookW, bookH);
+        if (!shape) return;
+
+        session.snappedShape = shape;
+        const snappedBookPoints = sampleShapeToBookPoints(shape, bookW, bookH);
+        setDraftStrokesByPage(buildDraftByPage(snappedBookPoints, session, shape.kind));
+      }, HOLD_SNAP_MS);
+    }, [clearHoldTimer, bookW, bookH, buildDraftByPage]);
+
     const resolveBookPoint = useCallback(
-      (clientX: number, clientY: number): { pageNumber: number; nx: number; ny: number } | null => {
+      (
+        clientX: number,
+        clientY: number,
+        allowOutside = false,
+      ): { bx: number; by: number; pageNumber: number | null; nx: number; ny: number } | null => {
         const el = bookRef.current;
         if (!el) return null;
         const rect = el.getBoundingClientRect();
@@ -741,11 +820,13 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
 
         const relX = (clientX - rect.left) / rect.width;
         const relY = (clientY - rect.top) / rect.height;
-        if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return null;
+        if (!allowOutside && (relX < 0 || relX > 1 || relY < 0 || relY > 1)) return null;
 
         if (spreadMode === 'single') {
-          if (layout.leftPage === null) return null;
+          if (!allowOutside && layout.leftPage === null) return null;
           return {
+            bx: relX,
+            by: relY,
             pageNumber: layout.leftPage,
             nx: Math.max(0, Math.min(1, relX)),
             ny: Math.max(0, Math.min(1, relY)),
@@ -754,9 +835,11 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
 
         const isLeftHalf = relX < 0.5;
         const targetPage = isLeftHalf ? layout.leftPage : layout.rightPage;
-        if (targetPage === null) return null;
+        if (!allowOutside && targetPage === null) return null;
 
         return {
+          bx: relX,
+          by: relY,
           pageNumber: targetPage,
           nx: Math.max(0, Math.min(1, isLeftHalf ? relX * 2 : (relX - 0.5) * 2)),
           ny: Math.max(0, Math.min(1, relY)),
@@ -765,11 +848,75 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       [spreadMode, layout],
     );
 
+    const eraseAtPoint = useCallback(
+      (clientX: number, clientY: number) => {
+        const work = eraserWorkingRef.current;
+        if (!work) return;
+        const pt = resolveBookPoint(clientX, clientY, false);
+        if (!pt || pt.pageNumber === null) return;
+
+        const ensurePageLoaded = (pageNum: number): Stroke[] => {
+          if (!(pageNum in work.currentByPage)) {
+            const initial = getLayerStrokes(pageNum, activeLayer);
+            work.initialByPage[pageNum] = initial;
+            work.currentByPage[pageNum] = initial;
+          }
+          return work.currentByPage[pageNum];
+        };
+
+        const currentPageStrokes = ensurePageLoaded(pt.pageNumber);
+        const hitGroupIds = new Set<string>();
+        let hitAny = false;
+        const directHitIndices = new Set<number>();
+
+        for (let i = 0; i < currentPageStrokes.length; i++) {
+          const s = currentPageStrokes[i];
+          if (isPointNearStroke(pt.nx, pt.ny, s)) {
+            hitAny = true;
+            directHitIndices.add(i);
+            if (s.groupId) {
+              hitGroupIds.add(s.groupId);
+            }
+          }
+        }
+
+        if (!hitAny) return;
+
+        // Erase hit strokes + any same-page split segments sharing the same groupId
+        const nextCurrent = currentPageStrokes.filter(
+          (s, idx) => !directHitIndices.has(idx) && (!s.groupId || !hitGroupIds.has(s.groupId)),
+        );
+        if (nextCurrent.length !== currentPageStrokes.length) {
+          work.currentByPage[pt.pageNumber] = nextCurrent;
+          work.changed = true;
+          commitLayerStrokes(pt.pageNumber, activeLayer, nextCurrent);
+        }
+
+        // In double spread mode, also erase paired segments on the sibling page sharing the groupId
+        if (spreadMode === 'double' && hitGroupIds.size > 0) {
+          const otherPage =
+            pt.pageNumber === layout.leftPage ? layout.rightPage : layout.leftPage;
+          if (otherPage !== null) {
+            const otherStrokes = ensurePageLoaded(otherPage);
+            const nextOther = otherStrokes.filter(
+              (s) => !s.groupId || !hitGroupIds.has(s.groupId),
+            );
+            if (nextOther.length !== otherStrokes.length) {
+              work.currentByPage[otherPage] = nextOther;
+              work.changed = true;
+              commitLayerStrokes(otherPage, activeLayer, nextOther);
+            }
+          }
+        }
+      },
+      [resolveBookPoint, getLayerStrokes, activeLayer, commitLayerStrokes, spreadMode, layout],
+    );
+
     const handleDrawStart = useCallback(
       (clientX: number, clientY: number, pressure: number): boolean => {
         if (flipSessionRef.current) return false;
-        const pt = resolveBookPoint(clientX, clientY);
-        if (!pt) return false;
+        const pt = resolveBookPoint(clientX, clientY, false);
+        if (!pt || pt.pageNumber === null) return false;
 
         // Sync active sidebar side only if it actually changed
         if (spreadMode === 'double') {
@@ -780,33 +927,32 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         }
 
         if (tool === 'eraser') {
-          const initial = getLayerStrokes(pt.pageNumber, activeLayer);
-          const filtered = initial.filter((s) => !isPointNearStroke(pt.nx, pt.ny, s));
-          const changed = filtered.length !== initial.length;
           eraserWorkingRef.current = {
-            pageNumber: pt.pageNumber,
-            initialStrokes: initial,
-            currentStrokes: filtered,
-            changed,
+            initialByPage: {},
+            currentByPage: {},
+            changed: false,
           };
-          if (changed) {
-            commitLayerStrokes(pt.pageNumber, activeLayer, filtered);
-          }
+          eraseAtPoint(clientX, clientY);
           return true;
         }
 
+        clearHoldTimer();
         const sizeSpec = SIZE_OPTIONS[sizeIndex];
-        const newStroke: Stroke = {
-          id: createId(),
-          tool: tool === 'marker' ? 'marker' : 'pen',
-          color: tool === 'marker' ? markerColor : penColor,
-          size: tool === 'marker' ? sizeSpec.marker : sizeSpec.pen,
-          points: [[pt.nx, pt.ny, pressure || 0.5]],
-        };
+        const drawTool: 'pen' | 'marker' = tool === 'marker' ? 'marker' : 'pen';
+        const color = drawTool === 'marker' ? markerColor : penColor;
+        const size = drawTool === 'marker' ? sizeSpec.marker : sizeSpec.pen;
+        const initialPoints: StrokePoint[] = [[pt.bx, pt.by, pressure || 0.5]];
 
-        activeDrawPageRef.current = pt.pageNumber;
-        draftStrokeRef.current = newStroke;
-        setDraftStroke({ pageNumber: pt.pageNumber, stroke: newStroke });
+        const session = {
+          tool: drawTool,
+          color,
+          size,
+          rawBookPoints: initialPoints,
+          holdAnchorClient: { x: clientX, y: clientY },
+          snappedShape: null as SnappedShape | null,
+        };
+        draftSessionRef.current = session;
+        setDraftStrokesByPage(buildDraftByPage(initialPoints, session));
         return true;
       },
       [
@@ -815,12 +961,12 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         setSelectedSpreadSide,
         layout.leftPage,
         tool,
-        getLayerStrokes,
-        activeLayer,
-        commitLayerStrokes,
+        eraseAtPoint,
+        clearHoldTimer,
         sizeIndex,
         markerColor,
         penColor,
+        buildDraftByPage,
       ],
     );
 
@@ -829,82 +975,148 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         if (samples.length === 0) return;
 
         if (tool === 'eraser') {
-          const work = eraserWorkingRef.current;
-          if (!work) return;
-          let working = work.currentStrokes;
-          let erasedAny = false;
           for (const sample of samples) {
-            const pt = resolveBookPoint(sample.clientX, sample.clientY);
-            if (!pt || pt.pageNumber !== work.pageNumber) continue;
-            const nextFiltered = working.filter((s) => !isPointNearStroke(pt.nx, pt.ny, s));
-            if (nextFiltered.length !== working.length) {
-              working = nextFiltered;
-              erasedAny = true;
-            }
-          }
-          if (erasedAny) {
-            work.currentStrokes = working;
-            work.changed = true;
-            commitLayerStrokes(work.pageNumber, activeLayer, working);
+            eraseAtPoint(sample.clientX, sample.clientY);
           }
           return;
         }
 
-        const pageNum = activeDrawPageRef.current;
-        const current = draftStrokeRef.current;
-        if (pageNum === null || !current) return;
+        const session = draftSessionRef.current;
+        if (!session) return;
 
-        const appended: [number, number, number][] = [];
-        let lastPt = current.points[current.points.length - 1];
+        // Live adjustment mode after hold-to-snap triggered (Freeform / GoodNotes style)
+        if (session.snappedShape) {
+          const last = samples[samples.length - 1];
+          const pt = resolveBookPoint(last.clientX, last.clientY, true);
+          if (!pt) return;
+          const updatedShape = updateSnappedShape(
+            session.snappedShape,
+            pt.bx * bookW,
+            pt.by * bookH,
+          );
+          session.snappedShape = updatedShape;
+          const snappedBookPoints = sampleShapeToBookPoints(updatedShape, bookW, bookH);
+          setDraftStrokesByPage(buildDraftByPage(snappedBookPoints, session, updatedShape.kind));
+          return;
+        }
+
+        const appended: StrokePoint[] = [];
+        let lastPt = session.rawBookPoints[session.rawBookPoints.length - 1];
+        let movedBeyondHoldRadius = false;
+        let lastValidClient: { x: number; y: number } | null = null;
 
         for (const sample of samples) {
-          const pt = resolveBookPoint(sample.clientX, sample.clientY);
-          if (!pt || pt.pageNumber !== pageNum) continue;
-          if (lastPt) {
-            const dist = Math.hypot(pt.nx - lastPt[0], pt.ny - lastPt[1]);
-            if (dist < 0.0008) continue;
+          const pt = resolveBookPoint(sample.clientX, sample.clientY, false);
+          if (!pt || pt.pageNumber === null) continue;
+          lastValidClient = { x: sample.clientX, y: sample.clientY };
+
+          if (
+            Math.hypot(
+              sample.clientX - session.holdAnchorClient.x,
+              sample.clientY - session.holdAnchorClient.y,
+            ) > HOLD_STATIONARY_PX
+          ) {
+            movedBeyondHoldRadius = true;
+            session.holdAnchorClient = { x: sample.clientX, y: sample.clientY };
           }
-          const nextPt: [number, number, number] = [pt.nx, pt.ny, sample.pressure || 0.5];
+
+          if (lastPt) {
+            const dist = Math.hypot(pt.bx - lastPt[0], pt.by - lastPt[1]);
+            if (dist < 0.0005) continue;
+          }
+          const nextPt: StrokePoint = [pt.bx, pt.by, sample.pressure || 0.5];
           appended.push(nextPt);
           lastPt = nextPt;
         }
 
-        if (appended.length === 0) return;
+        if (appended.length > 0) {
+          session.rawBookPoints = [...session.rawBookPoints, ...appended];
+          setDraftStrokesByPage(buildDraftByPage(session.rawBookPoints, session));
+        }
 
-        const updated: Stroke = {
-          ...current,
-          points: [...current.points, ...appended],
-        };
-        draftStrokeRef.current = updated;
-        setDraftStroke({ pageNumber: pageNum, stroke: updated });
+        if (session.rawBookPoints.length >= 4 && lastValidClient) {
+          if (movedBeyondHoldRadius || holdTimerRef.current === null) {
+            scheduleHoldSnap();
+          }
+        }
       },
-      [resolveBookPoint, tool, commitLayerStrokes, activeLayer],
+      [tool, eraseAtPoint, resolveBookPoint, bookW, bookH, buildDraftByPage, scheduleHoldSnap],
     );
 
     const handleDrawEnd = useCallback(() => {
+      clearHoldTimer();
+
       if (tool === 'eraser') {
         const work = eraserWorkingRef.current;
         eraserWorkingRef.current = null;
         if (work && work.changed) {
-          const key = `${workbookId}:${work.pageNumber}:${activeLayer}`;
-          pushHistory(key, work.initialStrokes);
+          const key = `${workbookId}:${activeLayer}`;
+          pushHistory(key, work.initialByPage);
         }
         return;
       }
 
-      const pageNum = activeDrawPageRef.current;
-      const finished = draftStrokeRef.current;
-      activeDrawPageRef.current = null;
-      draftStrokeRef.current = null;
+      const session = draftSessionRef.current;
+      draftSessionRef.current = null;
+      setDraftStrokesByPage({});
+      if (!session) return;
 
-      if (pageNum !== null && finished) {
-        const existing = getLayerStrokes(pageNum, activeLayer);
-        const key = `${workbookId}:${pageNum}:${activeLayer}`;
-        pushHistory(key, existing);
-        commitLayerStrokes(pageNum, activeLayer, [...existing, finished]);
+      const finalBookPoints = session.snappedShape
+        ? sampleShapeToBookPoints(session.snappedShape, bookW, bookH)
+        : session.rawBookPoints;
+      const shapeKind = session.snappedShape?.kind;
+
+      const segments = splitBookPointsToPages(
+        finalBookPoints,
+        spreadMode,
+        layout.leftPage,
+        layout.rightPage,
+      );
+      if (segments.length === 0) return;
+
+      const groupId = segments.length > 1 ? createId() : undefined;
+      const addedByPage = new Map<number, Stroke[]>();
+      for (const seg of segments) {
+        const stroke: Stroke = {
+          id: createId(),
+          tool: session.tool,
+          color: session.color,
+          size: session.size,
+          points: seg.points,
+          ...(groupId ? { groupId } : {}),
+          ...(shapeKind ? { shapeKind } : {}),
+        };
+        const list = addedByPage.get(seg.pageNumber);
+        if (list) list.push(stroke);
+        else addedByPage.set(seg.pageNumber, [stroke]);
       }
-      setDraftStroke(null);
-    }, [tool, workbookId, activeLayer, pushHistory, getLayerStrokes, commitLayerStrokes]);
+
+      const prevSnapshot: PageStrokesSnapshot = {};
+      for (const pageNum of addedByPage.keys()) {
+        prevSnapshot[pageNum] = getLayerStrokes(pageNum, activeLayer);
+      }
+
+      const key = `${workbookId}:${activeLayer}`;
+      pushHistory(key, prevSnapshot);
+
+      for (const [pageNum, added] of addedByPage.entries()) {
+        const existing = prevSnapshot[pageNum] ?? [];
+        commitLayerStrokes(pageNum, activeLayer, [...existing, ...added]);
+      }
+    }, [
+      clearHoldTimer,
+      tool,
+      workbookId,
+      activeLayer,
+      pushHistory,
+      bookW,
+      bookH,
+      spreadMode,
+      layout.leftPage,
+      layout.rightPage,
+      getLayerStrokes,
+      commitLayerStrokes,
+    ]);
 
     // ===== Interactive Drag Flip Callbacks =====
     const handleFlipStart = useCallback(
@@ -994,33 +1206,36 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       [settleFlip, stopFlipAnimation],
     );
 
-    // ===== Undo / Redo =====
-    const getTargetPageForHistory = useCallback((): number => {
-      if (spreadMode === 'single') return layout.leftPage ?? currentPage;
-      const side = useViewerStore.getState().selectedSpreadSide;
-      if (side === 'left') return layout.leftPage ?? layout.rightPage ?? currentPage;
-      return layout.rightPage ?? layout.leftPage ?? currentPage;
-    }, [spreadMode, layout, currentPage]);
+    // ===== Undo / Redo (atomic across cross-spread pages) =====
+    const visiblePages = useMemo(
+      () =>
+        spreadMode === 'single'
+          ? layout.leftPage !== null
+            ? [layout.leftPage]
+            : []
+          : [layout.leftPage, layout.rightPage].filter((p): p is number => p !== null),
+      [spreadMode, layout.leftPage, layout.rightPage],
+    );
 
     const handleUndo = useCallback(() => {
-      const targetPage = getTargetPageForHistory();
-      const key = `${workbookId}:${targetPage}:${activeLayer}`;
-      const current = getLayerStrokes(targetPage, activeLayer);
-      const prev = popUndo(key, current);
-      if (prev !== null) {
-        commitLayerStrokes(targetPage, activeLayer, prev);
+      const key = `${workbookId}:${activeLayer}`;
+      const restored = popUndo(key, visiblePages, (p) => getLayerStrokes(p, activeLayer));
+      if (restored) {
+        for (const [pStr, strokes] of Object.entries(restored)) {
+          commitLayerStrokes(Number(pStr), activeLayer, strokes);
+        }
       }
-    }, [getTargetPageForHistory, workbookId, activeLayer, getLayerStrokes, popUndo, commitLayerStrokes]);
+    }, [workbookId, activeLayer, popUndo, visiblePages, getLayerStrokes, commitLayerStrokes]);
 
     const handleRedo = useCallback(() => {
-      const targetPage = getTargetPageForHistory();
-      const key = `${workbookId}:${targetPage}:${activeLayer}`;
-      const current = getLayerStrokes(targetPage, activeLayer);
-      const next = popRedo(key, current);
-      if (next !== null) {
-        commitLayerStrokes(targetPage, activeLayer, next);
+      const key = `${workbookId}:${activeLayer}`;
+      const restored = popRedo(key, visiblePages, (p) => getLayerStrokes(p, activeLayer));
+      if (restored) {
+        for (const [pStr, strokes] of Object.entries(restored)) {
+          commitLayerStrokes(Number(pStr), activeLayer, strokes);
+        }
       }
-    }, [getTargetPageForHistory, workbookId, activeLayer, getLayerStrokes, popRedo, commitLayerStrokes]);
+    }, [workbookId, activeLayer, popRedo, visiblePages, getLayerStrokes, commitLayerStrokes]);
 
     useImperativeHandle(
       ref,
@@ -1079,8 +1294,8 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
     const getStrokesForPage = (p: number | null) =>
       p !== null ? visibleStrokesByPage.get(p) ?? [] : [];
 
-    const getDraftForPage = (p: number | null) =>
-      p !== null && draftStroke?.pageNumber === p ? draftStroke.stroke : null;
+    const getDraftsForPage = (p: number | null): Stroke[] | undefined =>
+      p !== null ? draftStrokesByPage[p] : undefined;
 
     const leftArrowIsPrev = bindingDirection === 'ltr';
     const canGoLeft = leftArrowIsPrev ? prevTargetPage !== null : nextTargetPage !== null;
@@ -1166,10 +1381,10 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                     strokes={getStrokesForPage(
                       flipSession?.mode === 'double' ? flipSession.staticLeft : layout.leftPage,
                     )}
-                    draftStroke={
+                    draftStrokes={
                       flipSession
-                        ? null
-                        : getDraftForPage(layout.leftPage)
+                        ? undefined
+                        : getDraftsForPage(layout.leftPage)
                     }
                     hideInk={allInkHidden}
                     renderScale={1}
@@ -1198,10 +1413,10 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                     strokes={getStrokesForPage(
                       flipSession?.mode === 'double' ? flipSession.staticRight : layout.rightPage,
                     )}
-                    draftStroke={
+                    draftStrokes={
                       flipSession
-                        ? null
-                        : getDraftForPage(layout.rightPage)
+                        ? undefined
+                        : getDraftsForPage(layout.rightPage)
                     }
                     hideInk={allInkHidden}
                     renderScale={1}
@@ -1311,10 +1526,10 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                     strokes={getStrokesForPage(
                       flipSession?.mode === 'single' ? flipSession.underPage : layout.leftPage,
                     )}
-                    draftStroke={
+                    draftStrokes={
                       flipSession
-                        ? null
-                        : getDraftForPage(layout.leftPage)
+                        ? undefined
+                        : getDraftsForPage(layout.leftPage)
                     }
                     hideInk={allInkHidden}
                     renderScale={1}

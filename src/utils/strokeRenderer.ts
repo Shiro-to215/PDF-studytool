@@ -33,6 +33,36 @@ export function drawSingleStroke(
 
   // Reference baseline width 700px so strokes scale cleanly across view sizes
   const scaleFactor = width / 700;
+
+  // Auto-snapped geometric shapes (straight line / circle / ellipse) render with uniform crisp width
+  if (stroke.shapeKind === 'line' || stroke.shapeKind === 'ellipse') {
+    const pts = stroke.points;
+    ctx.save();
+    ctx.strokeStyle = stroke.color;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.globalAlpha = stroke.tool === 'marker' ? 0.36 : 1;
+    ctx.lineWidth = Math.max(
+      stroke.tool === 'marker' ? 4 : 1.4,
+      stroke.size * scaleFactor * (stroke.tool === 'marker' ? 0.95 : 0.82),
+    );
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0] * width, pts[0][1] * height);
+    for (let i = 1; i < pts.length; i++) {
+      ctx.lineTo(pts[i][0] * width, pts[i][1] * height);
+    }
+    if (stroke.shapeKind === 'ellipse' && pts.length >= 3) {
+      const first = pts[0];
+      const last = pts[pts.length - 1];
+      if (Math.hypot(first[0] - last[0], first[1] - last[1]) < 0.002) {
+        ctx.closePath();
+      }
+    }
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
   const scaledPoints = stroke.points.map(([nx, ny, p]) => [
     nx * width,
     ny * height,

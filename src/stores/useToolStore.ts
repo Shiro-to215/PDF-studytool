@@ -23,9 +23,22 @@ export const SIZE_OPTIONS = [
   { label: '太', pen: 5.5, marker: 30 },
 ] as const;
 
+export type PageStrokesSnapshot = Record<number, Stroke[]>;
+
 interface HistoryBucket {
-  past: Stroke[][];
-  future: Stroke[][];
+  past: PageStrokesSnapshot[];
+  future: PageStrokesSnapshot[];
+}
+
+function snapshotTouchesVisible(
+  snapshot: PageStrokesSnapshot | undefined,
+  visiblePages: number[],
+): boolean {
+  if (!snapshot || visiblePages.length === 0) return false;
+  for (const key of Object.keys(snapshot)) {
+    if (visiblePages.includes(Number(key))) return true;
+  }
+  return false;
 }
 
 interface ToolStore {
@@ -50,11 +63,19 @@ interface ToolStore {
   setAllInkHidden: (hidden: boolean) => void;
   toggleAllInkHidden: () => void;
 
-  pushHistory: (key: string, previousStrokes: Stroke[]) => void;
-  popUndo: (key: string, currentStrokes: Stroke[]) => Stroke[] | null;
-  popRedo: (key: string, currentStrokes: Stroke[]) => Stroke[] | null;
-  canUndo: (key: string) => boolean;
-  canRedo: (key: string) => boolean;
+  pushHistory: (key: string, previousByPage: PageStrokesSnapshot) => void;
+  popUndo: (
+    key: string,
+    visiblePages: number[],
+    getCurrent: (pageNum: number) => Stroke[],
+  ) => PageStrokesSnapshot | null;
+  popRedo: (
+    key: string,
+    visiblePages: number[],
+    getCurrent: (pageNum: number) => Stroke[],
+  ) => PageStrokesSnapshot | null;
+  canUndo: (key: string, visiblePages: number[]) => boolean;
+  canRedo: (key: string, visiblePages: number[]) => boolean;
 }
 
 export const useToolStore = create<ToolStore>((set, get) => ({
@@ -92,10 +113,10 @@ export const useToolStore = create<ToolStore>((set, get) => ({
   setAllInkHidden: (allInkHidden) => set({ allInkHidden }),
   toggleAllInkHidden: () => set((s) => ({ allInkHidden: !s.allInkHidden })),
 
-  pushHistory: (key, previousStrokes) =>
+  pushHistory: (key, previousByPage) =>
     set((s) => {
       const bucket = s.historyByKey[key] ?? { past: [], future: [] };
-      const nextPast = [...bucket.past, previousStrokes].slice(-40);
+      const nextPast = [...bucket.past, previousByPage].slice(-40);
       return {
         historyByKey: {
           ...s.historyByKey,
@@ -104,12 +125,20 @@ export const useToolStore = create<ToolStore>((set, get) => ({
       };
     }),
 
-  popUndo: (key, currentStrokes) => {
+  popUndo: (key, visiblePages, getCurrent) => {
     const bucket = get().historyByKey[key];
     if (!bucket || bucket.past.length === 0) return null;
     const restored = bucket.past[bucket.past.length - 1];
+    if (!snapshotTouchesVisible(restored, visiblePages)) return null;
+
+    const currentSnap: PageStrokesSnapshot = {};
+    for (const pStr of Object.keys(restored)) {
+      const pageNum = Number(pStr);
+      currentSnap[pageNum] = getCurrent(pageNum);
+    }
+
     const nextPast = bucket.past.slice(0, -1);
-    const nextFuture = [...bucket.future, currentStrokes].slice(-40);
+    const nextFuture = [...bucket.future, currentSnap].slice(-40);
     set((s) => ({
       historyByKey: {
         ...s.historyByKey,
@@ -119,12 +148,20 @@ export const useToolStore = create<ToolStore>((set, get) => ({
     return restored;
   },
 
-  popRedo: (key, currentStrokes) => {
+  popRedo: (key, visiblePages, getCurrent) => {
     const bucket = get().historyByKey[key];
     if (!bucket || bucket.future.length === 0) return null;
     const restored = bucket.future[bucket.future.length - 1];
+    if (!snapshotTouchesVisible(restored, visiblePages)) return null;
+
+    const currentSnap: PageStrokesSnapshot = {};
+    for (const pStr of Object.keys(restored)) {
+      const pageNum = Number(pStr);
+      currentSnap[pageNum] = getCurrent(pageNum);
+    }
+
     const nextFuture = bucket.future.slice(0, -1);
-    const nextPast = [...bucket.past, currentStrokes].slice(-40);
+    const nextPast = [...bucket.past, currentSnap].slice(-40);
     set((s) => ({
       historyByKey: {
         ...s.historyByKey,
@@ -134,6 +171,15 @@ export const useToolStore = create<ToolStore>((set, get) => ({
     return restored;
   },
 
-  canUndo: (key) => (get().historyByKey[key]?.past.length ?? 0) > 0,
-  canRedo: (key) => (get().historyByKey[key]?.future.length ?? 0) > 0,
+  canUndo: (key, visiblePages) => {
+    const bucket = get().historyByKey[key];
+    if (!bucket || bucket.past.length === 0) return false;
+    return snapshotTouchesVisible(bucket.past[bucket.past.length - 1], visiblePages);
+  },
+
+  canRedo: (key, visiblePages) => {
+    const bucket = get().historyByKey[key];
+    if (!bucket || bucket.future.length === 0) return false;
+    return snapshotTouchesVisible(bucket.future[bucket.future.length - 1], visiblePages);
+  },
 }));
