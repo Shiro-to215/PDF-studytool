@@ -99,7 +99,7 @@ export function StudySidebar({
           <ReviewTab
             pageStates={pageStates}
             problems={problems}
-            unitNodes={unitNodes}
+            customReasons={workbook.customReasons}
           />
         )}
       </aside>

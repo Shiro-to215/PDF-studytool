@@ -1,50 +1,69 @@
 import { useMemo, useState } from 'react';
 import { Play } from 'lucide-react';
 import {
+  DEFAULT_MISS_REASONS,
   STUDY_STATUS_META,
   type PageState,
   type Problem,
   type StudyStatus,
-  type UnitNode,
 } from '../../types/models';
-import { useViewerStore } from '../../stores/useViewerStore';
+import { getSpreadLayout, useViewerStore } from '../../stores/useViewerStore';
 
 interface ReviewTabProps {
   pageStates: PageState[];
   problems: Problem[];
-  unitNodes: UnitNode[];
+  customReasons: string[];
 }
 
 interface ReviewItem {
   id: string;
   label: string;
-  subtitle?: string;
+  isPageRecord: boolean;
   pageNumber: number;
   status: StudyStatus;
   missReasons: string[];
 }
 
-export function ReviewTab({ pageStates, problems, unitNodes }: ReviewTabProps) {
-  const { setCurrentPage, setSidebarTab, startReviewQueue } = useViewerStore();
-  const [statusFilter, setStatusFilter] = useState<'all' | 'review' | 'weak'>('all');
+type StatusFilter = 'all' | 'review' | 'weak';
+
+const STATUS_FILTER_META: Record<StatusFilter, { label: string; activeClass: string }> = {
+  all: {
+    label: 'すべて',
+    activeClass: 'bg-base-100 text-base-content border-base-300',
+  },
+  review: {
+    label: '要復習',
+    activeClass: 'bg-amber-500/18 text-amber-800 dark:text-amber-200 border-amber-500/45',
+  },
+  weak: {
+    label: '苦手',
+    activeClass: 'bg-rose-500/18 text-rose-800 dark:text-rose-200 border-rose-500/45',
+  },
+};
+
+export function ReviewTab({ pageStates, problems, customReasons }: ReviewTabProps) {
+  const {
+    currentPage,
+    pageCount,
+    spreadMode,
+    bindingDirection,
+    coverSinglePage,
+    setCurrentPage,
+    startReviewQueue,
+  } = useViewerStore();
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [reasonFilter, setReasonFilter] = useState<string>('all');
 
-  const unitPathMap = useMemo(() => {
-    const byId = new Map(unitNodes.map((u) => [u.id, u]));
-    const cache = new Map<string, string>();
-    const resolve = (id: string | null): string => {
-      if (!id) return '';
-      if (cache.has(id)) return cache.get(id)!;
-      const node = byId.get(id);
-      if (!node) return '';
-      const parent = resolve(node.parentId);
-      const path = parent ? `${parent} / ${node.name}` : node.name;
-      cache.set(id, path);
-      return path;
-    };
-    for (const u of unitNodes) resolve(u.id);
-    return cache;
-  }, [unitNodes]);
+  const visiblePageSet = useMemo(() => {
+    const layout = getSpreadLayout(
+      currentPage,
+      pageCount,
+      spreadMode,
+      bindingDirection,
+      coverSinglePage,
+    );
+    return new Set(layout.pages.length > 0 ? layout.pages : [currentPage]);
+  }, [currentPage, pageCount, spreadMode, bindingDirection, coverSinglePage]);
 
   const allItems = useMemo<ReviewItem[]>(() => {
     const items: ReviewItem[] = [];
@@ -54,7 +73,7 @@ export function ReviewTab({ pageStates, problems, unitNodes }: ReviewTabProps) {
         items.push({
           id: `prob:${p.id}`,
           label: p.numberLabel,
-          subtitle: p.unitId ? unitPathMap.get(p.unitId) : undefined,
+          isPageRecord: false,
           pageNumber: p.pageNumber,
           status: p.status,
           missReasons: p.missReasons,
@@ -67,7 +86,7 @@ export function ReviewTab({ pageStates, problems, unitNodes }: ReviewTabProps) {
         items.push({
           id: `page:${s.id}`,
           label: `P.${s.pageNumber}`,
-          subtitle: s.memo ? s.memo.slice(0, 36) : 'ページ記録',
+          isPageRecord: true,
           pageNumber: s.pageNumber,
           status: s.status,
           missReasons: s.missReasons,
@@ -76,15 +95,16 @@ export function ReviewTab({ pageStates, problems, unitNodes }: ReviewTabProps) {
     }
 
     return items.sort((a, b) => a.pageNumber - b.pageNumber);
-  }, [problems, pageStates, unitPathMap]);
+  }, [problems, pageStates]);
 
-  const availableReasons = useMemo(() => {
-    const set = new Set<string>();
+  // Always show all known miss reasons regardless of whether any review item matches them
+  const allReasons = useMemo(() => {
+    const set = new Set<string>([...DEFAULT_MISS_REASONS, ...customReasons]);
     for (const item of allItems) {
       for (const r of item.missReasons) set.add(r);
     }
     return Array.from(set);
-  }, [allItems]);
+  }, [customReasons, allItems]);
 
   const filtered = useMemo(
     () =>
@@ -96,9 +116,9 @@ export function ReviewTab({ pageStates, problems, unitNodes }: ReviewTabProps) {
     [allItems, statusFilter, reasonFilter],
   );
 
+  // Stay on the Review tab when jumping to a problem page
   const handleJump = (item: ReviewItem) => {
     setCurrentPage(item.pageNumber);
-    setSidebarTab('record');
   };
 
   const handleStartQueue = () => {
@@ -109,123 +129,131 @@ export function ReviewTab({ pageStates, problems, unitNodes }: ReviewTabProps) {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Filters */}
-      <div className="p-3 border-b border-base-300 space-y-2.5 shrink-0">
-        <div className="grid grid-cols-3 gap-1 p-0.5 rounded-lg bg-base-200 border border-base-300">
+      <div className="p-3.5 border-b border-base-300 space-y-3 shrink-0">
+        {/* Flex-expanding Status Filter (matches RecordCard status selector) */}
+        <div className="flex items-center gap-1.5 p-1 rounded-xl bg-base-200 border border-base-300">
           {(['all', 'review', 'weak'] as const).map((key) => {
-            const label =
-              key === 'all' ? 'すべて' : key === 'review' ? '要復習' : '苦手';
+            const active = statusFilter === key;
+            const meta = STATUS_FILTER_META[key];
             return (
               <button
                 key={key}
                 type="button"
                 onClick={() => setStatusFilter(key)}
-                className={`py-1 rounded-md text-[11px] font-medium transition-colors ${
-                  statusFilter === key
-                    ? 'bg-base-100 text-base-content shadow-xs'
-                    : 'text-base-content/60 hover:text-base-content'
+                className={`min-w-0 h-10 px-2 rounded-lg whitespace-nowrap overflow-hidden transition-all duration-300 ease-out flex items-center justify-center border ${
+                  active
+                    ? `flex-[1.65] text-sm font-semibold shadow-xs ${meta.activeClass}`
+                    : 'flex-1 text-xs font-medium border-transparent text-base-content/55 hover:text-base-content'
                 }`}
               >
-                {label}
+                {meta.label}
               </button>
             );
           })}
         </div>
 
-        {availableReasons.length > 0 && (
-          <div className="flex flex-wrap gap-1">
+        {/* Always-visible 3-Column Miss Reason Filter Grid */}
+        <div className="grid grid-cols-3 gap-1.5">
+          <button
+            type="button"
+            onClick={() => setReasonFilter('all')}
+            className={`h-9 px-2 rounded-xl text-xs font-medium truncate border transition-colors ${
+              reasonFilter === 'all'
+                ? 'bg-primary text-primary-content border-primary shadow-xs'
+                : 'bg-base-200/70 text-base-content/75 border-base-300 hover:bg-base-200'
+            }`}
+          >
+            全原因
+          </button>
+          {allReasons.map((r) => (
             <button
+              key={r}
               type="button"
-              onClick={() => setReasonFilter('all')}
-              className={`px-2 py-0.5 rounded-full text-[10px] border transition-colors ${
-                reasonFilter === 'all'
-                  ? 'bg-primary text-primary-content border-primary'
-                  : 'bg-base-200/70 text-base-content/65 border-base-300'
+              onClick={() => setReasonFilter(r)}
+              title={r}
+              className={`h-9 px-2 rounded-xl text-xs font-medium truncate border transition-colors ${
+                reasonFilter === r
+                  ? 'bg-primary text-primary-content border-primary shadow-xs'
+                  : 'bg-base-200/70 text-base-content/75 border-base-300 hover:bg-base-200'
               }`}
             >
-              全原因
+              {r}
             </button>
-            {availableReasons.map((r) => (
-              <button
-                key={r}
-                type="button"
-                onClick={() => setReasonFilter(r)}
-                className={`px-2 py-0.5 rounded-full text-[10px] border transition-colors ${
-                  reasonFilter === r
-                    ? 'bg-primary text-primary-content border-primary'
-                    : 'bg-base-200/70 text-base-content/65 border-base-300'
-                }`}
-              >
-                {r}
-              </button>
-            ))}
-          </div>
-        )}
+          ))}
+        </div>
 
         {filtered.length > 0 && (
           <button
             type="button"
             onClick={handleStartQueue}
-            className="btn btn-primary btn-xs w-full gap-1.5 font-medium"
+            className="btn btn-primary btn-sm h-10 w-full rounded-xl gap-2 text-sm font-semibold"
           >
-            <Play className="w-3 h-3" />
+            <Play className="w-4 h-4" />
             この {filtered.length} 件を連続復習する
           </button>
         )}
       </div>
 
       {/* Review List */}
-      <div className="flex-1 overflow-y-auto thin-scrollbar p-3 space-y-2">
+      <div className="flex-1 overflow-y-auto thin-scrollbar p-3.5 space-y-2.5">
         {filtered.length === 0 ? (
-          <div className="py-10 text-center space-y-1">
-            <p className="text-xs font-medium text-base-content/60">
+          <div className="py-12 text-center space-y-1.5">
+            <p className="text-sm font-medium text-base-content/60">
               該当する復習項目はありません
             </p>
-            <p className="text-[11px] text-base-content/45">
+            <p className="text-xs text-base-content/45">
               「記録」タブで要復習や苦手にするとここに集約されます
             </p>
           </div>
         ) : (
-          filtered.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => handleJump(item)}
-              className="w-full text-left p-3 rounded-xl border border-base-300 bg-base-100 hover:border-primary transition-colors space-y-1.5"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-base-200 text-base-content/75 shrink-0">
-                    P.{item.pageNumber}
-                  </span>
-                  <span className="text-xs font-semibold truncate">{item.label}</span>
-                </div>
-                <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded-full border shrink-0 ${
-                    STUDY_STATUS_META[item.status].badgeClass
-                  }`}
-                >
-                  {STUDY_STATUS_META[item.status].label}
-                </span>
-              </div>
-
-              {item.subtitle && (
-                <p className="text-[11px] text-base-content/55 truncate">{item.subtitle}</p>
-              )}
-
-              {item.missReasons.length > 0 && (
-                <div className="flex flex-wrap gap-1 pt-0.5">
-                  {item.missReasons.map((r) => (
-                    <span
-                      key={r}
-                      className="text-[10px] px-1.5 py-0.5 rounded bg-base-200 text-base-content/65"
-                    >
-                      {r}
+          filtered.map((item) => {
+            const isCurrent = visiblePageSet.has(item.pageNumber);
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => handleJump(item)}
+                className={`w-full text-left p-3.5 rounded-2xl border transition-colors space-y-2 ${
+                  isCurrent
+                    ? 'border-primary/50 bg-primary/[0.04] hover:bg-primary/[0.08]'
+                    : 'border-base-300 bg-base-100 hover:border-primary/45 hover:bg-base-200/40'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {!item.isPageRecord && (
+                      <span className="text-xs font-mono font-medium px-2 py-0.5 rounded-lg bg-base-200 text-base-content/75 shrink-0">
+                        P.{item.pageNumber}
+                      </span>
+                    )}
+                    <span className="text-[15px] font-semibold text-base-content truncate">
+                      {item.label}
                     </span>
-                  ))}
+                  </div>
+                  <span
+                    className={`text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 ${
+                      STUDY_STATUS_META[item.status].badgeClass
+                    }`}
+                  >
+                    {STUDY_STATUS_META[item.status].label}
+                  </span>
                 </div>
-              )}
-            </button>
-          ))
+
+                {item.missReasons.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {item.missReasons.map((r) => (
+                      <span
+                        key={r}
+                        className="text-xs font-medium px-2.5 py-0.5 rounded-full bg-base-200 text-base-content/70"
+                      >
+                        {r}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </button>
+            );
+          })
         )}
       </div>
     </div>
