@@ -729,7 +729,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
 
     // ===== Ink Drawing State (supports cross-spread strokes & 0.6s hold-to-snap shapes) =====
     const HOLD_SNAP_MS = 600;
-    const HOLD_STATIONARY_PX = 10;
+    const HOLD_STATIONARY_PX = 12;
 
     const [draftStrokesByPage, setDraftStrokesByPage] = useState<Record<number, Stroke[]>>({});
     const draftSessionRef = useRef<{

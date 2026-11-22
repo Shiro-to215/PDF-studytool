@@ -81,6 +81,22 @@ function pointToSegmentDist(p: Pt2D, a: Pt2D, b: Pt2D): number {
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
 
+/** Decimate micro-jitter points (< minStep px) so arc length isn't inflated by stylus tremor */
+function simplifyJitter(pts: Pt2D[], minStep = 4): Pt2D[] {
+  if (pts.length <= 2) return pts;
+  const out: Pt2D[] = [pts[0]];
+  let last = pts[0];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const p = pts[i];
+    if (Math.hypot(p.x - last.x, p.y - last.y) >= minStep) {
+      out.push(p);
+      last = p;
+    }
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
 /**
  * Recognizes a straight line or circle/ellipse from a hand-drawn stroke in book-normalized
  * coordinates, using Euclidean aspect-corrected pixel dimensions (bookW x bookH).
@@ -92,10 +108,11 @@ export function recognizeHoldShape(
 ): SnappedShape | null {
   if (bookPoints.length < 4 || bookW <= 0 || bookH <= 0) return null;
 
-  const pts: Pt2D[] = bookPoints.map(([bx, by]) => ({
+  const rawPts: Pt2D[] = bookPoints.map(([bx, by]) => ({
     x: bx * bookW,
     y: by * bookH,
   }));
+  const pts = simplifyJitter(rawPts, 4);
 
   const { samples, totalLength } = resampleByArcLength(pts, 64);
   if (totalLength < 22 || samples.length < 4) return null;

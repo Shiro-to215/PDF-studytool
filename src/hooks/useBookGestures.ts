@@ -456,22 +456,13 @@ export function useBookGestures(callbacks: BookGestureCallbacks) {
     if (e.pointerType === 'pen') {
       if (!isPenDrawingRef.current || activePenIdRef.current !== e.pointerId) return;
       lastPenTimeRef.current = performance.now();
-      const coalesced =
-        typeof e.nativeEvent.getCoalescedEvents === 'function'
-          ? e.nativeEvent.getCoalescedEvents()
-          : [];
-      if (coalesced && coalesced.length > 0) {
-        const samples: DrawMoveSample[] = coalesced.map((ce) => ({
-          clientX: ce.clientX,
-          clientY: ce.clientY,
-          pressure: ce.pressure || 0.5,
-        }));
-        cb.onDrawMovePoints(samples);
-      } else {
-        cb.onDrawMovePoints([
-          { clientX: e.clientX, clientY: e.clientY, pressure: e.pressure || 0.5 },
-        ]);
-      }
+      // Always use the primary pointermove coordinates rather than getCoalescedEvents():
+      // getCoalescedEvents() is SecureContext-only (HTTPS) and on iPadOS Safari 18+
+      // can emit out-of-order / micro-jitter Apple Pencil samples that break hold-to-snap
+      // on long strokes while working fine on non-HTTPS LAN URLs.
+      cb.onDrawMovePoints([
+        { clientX: e.clientX, clientY: e.clientY, pressure: e.pressure || 0.5 },
+      ]);
       return;
     }
 
