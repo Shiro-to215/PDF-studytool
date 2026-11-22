@@ -60,7 +60,9 @@ export class PdfDocumentManager {
   private cache = new Map<number, CachedPageEntry>();
   private inFlight = new Map<string, Promise<CachedPageEntry>>();
   private activeRenderTasks = new Set<RenderTask>();
+  private protectedPages = new Set<number>();
   private accessCounter = 0;
+  private prefetchSeq = 0;
   private destroyed = false;
   private readonly maxCachePages = 10;
   private readonly maxCachePixels = 28_000_000;
@@ -237,10 +239,21 @@ export class PdfDocumentManager {
     ) {
       let oldestPage: number | null = null;
       let oldestTime = Infinity;
+      // First pass: prefer evicting non-protected pages (outside current + immediate next/prev spreads)
       for (const [pageNum, entry] of this.cache.entries()) {
+        if (this.protectedPages.has(pageNum)) continue;
         if (entry.lastUsed < oldestTime) {
           oldestTime = entry.lastUsed;
           oldestPage = pageNum;
+        }
+      }
+      // Fallback pass: if only protected pages remain and memory budget is exceeded, evict oldest
+      if (oldestPage === null) {
+        for (const [pageNum, entry] of this.cache.entries()) {
+          if (entry.lastUsed < oldestTime) {
+            oldestTime = entry.lastUsed;
+            oldestPage = pageNum;
+          }
         }
       }
       if (oldestPage === null) break;
@@ -253,35 +266,70 @@ export class PdfDocumentManager {
     }
   }
 
-  prefetchAround(centerPage: number, targetPixelWidth = 1200): void {
+  prefetchPages(pageNumbers: number[], targetPixelWidth = 1200, protectCount = 6): void {
     if (this.destroyed || !this.pdfDoc) return;
     const total = this.pdfDoc.numPages;
-    const offsets = [0, 1, 2, -1, -2];
-    const targets = offsets
-      .map((off) => centerPage + off)
-      .filter((p) => p >= 1 && p <= total && !this.hasAdequateCache(p, targetPixelWidth));
+    const seen = new Set<number>();
+    const validPages: number[] = [];
+
+    for (const p of pageNumbers) {
+      if (p < 1 || p > total || seen.has(p)) continue;
+      seen.add(p);
+      validPages.push(p);
+    }
+
+    // Protect current + immediately adjacent spreads from being evicted by farther prefetches
+    this.protectedPages = new Set(validPages.slice(0, protectCount));
+
+    // Touch already-cached priority pages (in reverse so highest-priority stays newest)
+    for (let i = validPages.length - 1; i >= 0; i--) {
+      const existing = this.cache.get(validPages[i]);
+      if (existing) {
+        existing.lastUsed = ++this.accessCounter;
+      }
+    }
+
+    const targets = validPages.filter((p) => !this.hasAdequateCache(p, targetPixelWidth));
+    const seq = ++this.prefetchSeq;
+    if (targets.length === 0) return;
 
     const runNext = (idx: number) => {
-      if (this.destroyed || idx >= targets.length) return;
+      if (this.destroyed || seq !== this.prefetchSeq || idx >= targets.length) return;
       const p = targets[idx];
       const schedule = () => {
-        if (this.destroyed) return;
+        if (this.destroyed || seq !== this.prefetchSeq) return;
+        // Don't prefetch non-protected farther spreads if pixel budget is already tight
+        if (
+          !this.protectedPages.has(p) &&
+          this.getTotalCachedPixels() > this.maxCachePixels * 0.85
+        ) {
+          return;
+        }
         void this.renderPage(p, targetPixelWidth)
           .catch(() => {})
           .finally(() => runNext(idx + 1));
       };
 
       if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-        (window as unknown as { requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => void }).requestIdleCallback(
-          schedule,
-          { timeout: 150 },
-        );
+        (
+          window as unknown as {
+            requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => void;
+          }
+        ).requestIdleCallback(schedule, { timeout: 120 });
       } else {
         setTimeout(schedule, 16);
       }
     };
 
     runNext(0);
+  }
+
+  prefetchAround(centerPage: number, targetPixelWidth = 1200): void {
+    const offsets = [0, 1, 2, 3, -1, -2, -3];
+    this.prefetchPages(
+      offsets.map((off) => centerPage + off),
+      targetPixelWidth,
+    );
   }
 
   async destroy(): Promise<void> {

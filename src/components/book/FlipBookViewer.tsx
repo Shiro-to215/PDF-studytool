@@ -442,11 +442,53 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       [currentPage, spreadMode, coverSinglePage],
     );
 
-    // Prefetch surrounding PDF pages using the exact same ideal resolution as PageSurface
+    // Prefetch current spread + full adjacent spreads (both sides of next/prev, plus 1 spread further)
+    // so turning either side never briefly flashes a blank white page.
     useEffect(() => {
-      if (!pdfManager) return;
-      pdfManager.prefetchAround(currentPage, getIdealRenderWidth(pageW, 1, aspectRatio));
-    }, [pdfManager, currentPage, pageW, aspectRatio]);
+      if (!pdfManager || pageCount <= 0) return;
+
+      const pages: number[] = [];
+      const pushSpread = (anchorPage: number | null) => {
+        if (anchorPage === null) return;
+        const sp = getSpreadLayout(
+          anchorPage,
+          pageCount,
+          spreadMode,
+          bindingDirection,
+          coverSinglePage,
+        );
+        if (sp.leftPage !== null) pages.push(sp.leftPage);
+        if (sp.rightPage !== null) pages.push(sp.rightPage);
+      };
+
+      const next2 =
+        nextTargetPage !== null
+          ? getNextSpreadPage(nextTargetPage, pageCount, spreadMode, coverSinglePage)
+          : null;
+      const prev2 =
+        prevTargetPage !== null
+          ? getPrevSpreadPage(prevTargetPage, spreadMode, coverSinglePage)
+          : null;
+
+      pushSpread(currentPage);
+      pushSpread(nextTargetPage);
+      pushSpread(prevTargetPage);
+      pushSpread(next2);
+      pushSpread(prev2);
+
+      pdfManager.prefetchPages(pages, getIdealRenderWidth(pageW, 1, aspectRatio));
+    }, [
+      pdfManager,
+      currentPage,
+      nextTargetPage,
+      prevTargetPage,
+      pageCount,
+      spreadMode,
+      bindingDirection,
+      coverSinglePage,
+      pageW,
+      aspectRatio,
+    ]);
 
     // Optimistic local stroke cache so strokes appear instantly with 0ms lag/flicker
     // and rapid consecutive strokes never overwrite each other before IndexedDB finishes.
