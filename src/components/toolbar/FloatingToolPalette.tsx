@@ -85,17 +85,19 @@ function loadPaletteState(): PaletteState {
   return { collapsed: false, dock: 'bottom', corner: 'bottom-right' };
 }
 
-function getNearestCornerForDock(dock: DockEdge): CornerPos {
+function getCornerForDock(dock: DockEdge, prevCorner: CornerPos): CornerPos {
+  const vSide: 'top' | 'bottom' = prevCorner.startsWith('top') ? 'top' : 'bottom';
+  const hSide: 'left' | 'right' = prevCorner.endsWith('left') ? 'left' : 'right';
+
   switch (dock) {
     case 'top':
-      return 'top-right';
-    case 'left':
-      return 'bottom-left';
-    case 'right':
-      return 'bottom-right';
+      return `top-${hSide}`;
     case 'bottom':
-    default:
-      return 'bottom-right';
+      return `bottom-${hSide}`;
+    case 'left':
+      return `${vSide}-left`;
+    case 'right':
+      return `${vSide}-right`;
   }
 }
 
@@ -752,6 +754,7 @@ export function FloatingToolPalette({
           ...prev,
           collapsed: false,
           dock: edge,
+          corner: getCornerForDock(edge, prev.corner),
         }));
       }
     }
@@ -773,7 +776,7 @@ export function FloatingToolPalette({
     setPaletteState((prev) => ({
       ...prev,
       collapsed: true,
-      corner: getNearestCornerForDock(prev.dock),
+      corner: getCornerForDock(prev.dock, prev.corner),
     }));
   };
 
