@@ -3,6 +3,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from 'react';
@@ -260,6 +261,12 @@ export function FloatingToolPalette({
   const markerBtnRef = useRef<HTMLButtonElement | null>(null);
   const sizePopoverRef = useRef<HTMLDivElement | null>(null);
   const safeBottomRef = useRef<HTMLDivElement | null>(null);
+  const dragStateRef = useRef<DragState | null>(null);
+  dragStateRef.current = dragState;
+  const paletteStateRef = useRef<PaletteState>(paletteState);
+  paletteStateRef.current = paletteState;
+  const suppressClickRef = useRef(false);
+  const suppressClickTimerRef = useRef<number | null>(null);
   const activeAnimsRef = useRef<Animation[]>([]);
   const flipOriginRef = useRef<{
     cx: number;
@@ -627,16 +634,23 @@ export function FloatingToolPalette({
   const colorList = tool === 'marker' ? MARKER_COLOR_OPTIONS : PEN_COLOR_OPTIONS;
   const activeColor = tool === 'marker' ? markerColor : penColor;
 
-  // ===== Drag Handling =====
+  // ===== Drag Handling (Freeform-style: grab anywhere on bar including buttons) =====
+  const isDragActive = dragState !== null;
+
   const beginDrag = (e: ReactPointerEvent<HTMLElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (dragStateRef.current) return;
     e.stopPropagation();
-    setSizePopover(null);
 
     const bounds = boundsRef.current?.getBoundingClientRect();
     const el = paletteElRef.current;
     const visualRect = el?.getBoundingClientRect();
     if (!bounds || !el || !visualRect) return;
+
+    const startedOnButton = Boolean((e.target as HTMLElement | null)?.closest('button'));
+    if (!startedOnButton) {
+      setSizePopover(null);
+    }
 
     const wasMorphing = activeAnimsRef.current.length > 0;
     clearMorphStyles();
@@ -650,13 +664,16 @@ export function FloatingToolPalette({
       ? visualRect.top + visualRect.height / 2 - bounds.top - realH / 2
       : visualRect.top - bounds.top;
 
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      // Ignore
+    // Defer setPointerCapture when starting on a button so short taps still trigger native click
+    if (!startedOnButton) {
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        // Ignore
+      }
     }
 
-    setDragState({
+    const nextDrag: DragState = {
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
@@ -668,94 +685,148 @@ export function FloatingToolPalette({
       elH: realH,
       moved: false,
       preview: null,
-    });
+    };
+    dragStateRef.current = nextDrag;
+    setDragState(nextDrag);
   };
 
-  const moveDrag = (e: ReactPointerEvent<HTMLElement>) => {
-    if (!dragState || dragState.pointerId !== e.pointerId) return;
-    e.stopPropagation();
+  useEffect(() => {
+    if (!isDragActive) return;
 
-    const bounds = boundsRef.current?.getBoundingClientRect();
-    if (!bounds) return;
+    const handleWindowMove = (e: PointerEvent) => {
+      const current = dragStateRef.current;
+      if (!current || current.pointerId !== e.pointerId) return;
 
-    const dist = Math.hypot(e.clientX - dragState.startX, e.clientY - dragState.startY);
-    const moved = dragState.moved || dist > 8;
-    const dragLeft = dragState.leftInBounds + (e.clientX - dragState.startX);
-    const dragTop = dragState.topInBounds + (e.clientY - dragState.startY);
-    const preview = moved
-      ? resolveSnapTarget(dragLeft, dragTop, dragState.elW, dragState.elH, bounds)
-      : null;
+      const bounds = boundsRef.current?.getBoundingClientRect();
+      if (!bounds) return;
 
-    setDragState((prev) =>
-      prev
-        ? {
-            ...prev,
-            curX: e.clientX,
-            curY: e.clientY,
-            moved,
-            preview,
-          }
-        : null,
-    );
-  };
+      const dist = Math.hypot(e.clientX - current.startX, e.clientY - current.startY);
+      const justStartedMoving = !current.moved && dist > 10;
+      const moved = current.moved || justStartedMoving;
 
-  const endDrag = (e: ReactPointerEvent<HTMLElement>, cancelled: boolean) => {
-    if (!dragState || dragState.pointerId !== e.pointerId) return;
-    e.stopPropagation();
-
-    try {
-      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-        e.currentTarget.releasePointerCapture(e.pointerId);
+      if (justStartedMoving) {
+        setSizePopover(null);
+        suppressClickRef.current = true;
+        try {
+          paletteElRef.current?.setPointerCapture(e.pointerId);
+        } catch {
+          // Ignore
+        }
       }
-    } catch {
-      // Ignore
-    }
 
-    const r = paletteElRef.current?.getBoundingClientRect();
-    if (!cancelled && r && r.width > 0) {
-      flipOriginRef.current = {
-        cx: r.left + r.width / 2,
-        cy: r.top + r.height / 2,
-        w: r.width,
-        h: r.height,
-        wasCollapsed: paletteState.collapsed,
-        wasVertical: paletteState.dock === 'left' || paletteState.dock === 'right',
+      if (!moved) return;
+
+      const dragLeft = current.leftInBounds + (e.clientX - current.startX);
+      const dragTop = current.topInBounds + (e.clientY - current.startY);
+      const preview = resolveSnapTarget(dragLeft, dragTop, current.elW, current.elH, bounds);
+
+      const next: DragState = {
+        ...current,
+        curX: e.clientX,
+        curY: e.clientY,
+        moved: true,
+        preview,
       };
-    }
+      dragStateRef.current = next;
+      setDragState(next);
+    };
 
-    const currentDrag = dragState;
-    setDragState(null);
-    setDragEndNonce((n) => n + 1);
+    const finishDrag = (e: PointerEvent, cancelled: boolean) => {
+      const currentDrag = dragStateRef.current;
+      if (!currentDrag || currentDrag.pointerId !== e.pointerId) return;
 
-    if (cancelled) return;
-
-    if (!currentDrag.moved) {
-      if (paletteState.collapsed) {
-        setPaletteState((prev) => ({
-          ...prev,
-          collapsed: false,
-          dock: getExpandDockForCorner(prev.corner, prev.dock),
-        }));
+      const el = paletteElRef.current;
+      try {
+        if (el?.hasPointerCapture(e.pointerId)) {
+          el.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // Ignore
       }
-      return;
-    }
 
-    if (currentDrag.preview) {
-      if (currentDrag.preview.kind === 'corner') {
-        const corner = currentDrag.preview.corner;
-        setPaletteState((prev) => ({
-          ...prev,
-          collapsed: true,
-          corner,
-        }));
-      } else {
-        const edge = currentDrag.preview.edge;
-        setPaletteState((prev) => ({
-          ...prev,
-          collapsed: false,
-          dock: edge,
-          corner: getCornerForDock(edge, prev.corner),
-        }));
+      const curPalette = paletteStateRef.current;
+      const r = el?.getBoundingClientRect();
+      if (!cancelled && r && r.width > 0 && (currentDrag.moved || curPalette.collapsed)) {
+        flipOriginRef.current = {
+          cx: r.left + r.width / 2,
+          cy: r.top + r.height / 2,
+          w: r.width,
+          h: r.height,
+          wasCollapsed: curPalette.collapsed,
+          wasVertical: curPalette.dock === 'left' || curPalette.dock === 'right',
+        };
+      }
+
+      dragStateRef.current = null;
+      setDragState(null);
+      if (currentDrag.moved || curPalette.collapsed) {
+        setDragEndNonce((n) => n + 1);
+      }
+
+      if (currentDrag.moved) {
+        if (suppressClickTimerRef.current !== null) {
+          window.clearTimeout(suppressClickTimerRef.current);
+        }
+        suppressClickTimerRef.current = window.setTimeout(() => {
+          suppressClickRef.current = false;
+          suppressClickTimerRef.current = null;
+        }, 120);
+      }
+
+      if (cancelled) return;
+
+      if (!currentDrag.moved) {
+        if (curPalette.collapsed) {
+          setPaletteState((prev) => ({
+            ...prev,
+            collapsed: false,
+            dock: getExpandDockForCorner(prev.corner, prev.dock),
+          }));
+        }
+        return;
+      }
+
+      if (currentDrag.preview) {
+        if (currentDrag.preview.kind === 'corner') {
+          const corner = currentDrag.preview.corner;
+          setPaletteState((prev) => ({
+            ...prev,
+            collapsed: true,
+            corner,
+          }));
+        } else {
+          const edge = currentDrag.preview.edge;
+          setPaletteState((prev) => ({
+            ...prev,
+            collapsed: false,
+            dock: edge,
+            corner: getCornerForDock(edge, prev.corner),
+          }));
+        }
+      }
+    };
+
+    const onUp = (e: PointerEvent) => finishDrag(e, false);
+    const onCancel = (e: PointerEvent) => finishDrag(e, true);
+
+    window.addEventListener('pointermove', handleWindowMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    return () => {
+      window.removeEventListener('pointermove', handleWindowMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+    };
+  }, [isDragActive, boundsRef]);
+
+  const handlePaletteClickCapture = (e: ReactMouseEvent<HTMLElement>) => {
+    if (suppressClickRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      suppressClickRef.current = false;
+      if (suppressClickTimerRef.current !== null) {
+        window.clearTimeout(suppressClickTimerRef.current);
+        suppressClickTimerRef.current = null;
       }
     }
   };
@@ -781,6 +852,9 @@ export function FloatingToolPalette({
   };
 
   const isVertical = paletteState.dock === 'left' || paletteState.dock === 'right';
+  const expandDock = getExpandDockForCorner(paletteState.corner, paletteState.dock);
+  // Rotate collapsed icon + color bar 90° toward screen center when expanding vertically (left/right)
+  const collapsedIconDeg = expandDock === 'left' ? -90 : expandDock === 'right' ? 90 : 0;
 
   const zoomResetLeftOffset =
     paletteState.collapsed && paletteState.corner === 'bottom-left'
@@ -916,9 +990,7 @@ export function FloatingToolPalette({
         <div
           ref={paletteElRef}
           onPointerDown={beginDrag}
-          onPointerMove={moveDrag}
-          onPointerUp={(e) => endDrag(e, false)}
-          onPointerCancel={(e) => endDrag(e, true)}
+          onClickCapture={handlePaletteClickCapture}
           onTouchStart={(e) => e.stopPropagation()}
           style={{ touchAction: 'none', transformOrigin: 'center center' }}
           title="タップで展開 / ドラッグで移動"
@@ -927,31 +999,28 @@ export function FloatingToolPalette({
           }`}
         >
           <div ref={contentElRef} className="relative flex items-center justify-center shrink-0">
-            {renderToolIcon('w-7 h-7 text-base-content/85')}
-            {tool !== 'eraser' && (
-              <span
-                className="absolute -bottom-3 left-1/2 w-6 h-[7px] rounded-full ring-1 ring-black/15"
-                style={{ backgroundColor: activeColor, transform: 'translateX(-50%)' }}
-              />
-            )}
+            <div
+              className="relative flex items-center justify-center transition-transform duration-300 ease-out"
+              style={{ transform: `rotate(${collapsedIconDeg}deg)` }}
+            >
+              {renderToolIcon('w-7 h-7 text-base-content/85')}
+              {tool !== 'eraser' && (
+                <span
+                  className="absolute -bottom-3 left-1/2 w-6 h-[7px] rounded-full ring-1 ring-black/15"
+                  style={{ backgroundColor: activeColor, transform: 'translateX(-50%)' }}
+                />
+              )}
+            </div>
           </div>
         </div>
       ) : (
         <div
           ref={paletteElRef}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            const target = e.target as HTMLElement;
-            if (!target.closest('button')) {
-              beginDrag(e);
-            }
-          }}
-          onPointerMove={moveDrag}
-          onPointerUp={(e) => endDrag(e, false)}
-          onPointerCancel={(e) => endDrag(e, true)}
+          onPointerDown={beginDrag}
+          onClickCapture={handlePaletteClickCapture}
           onTouchStart={(e) => e.stopPropagation()}
           style={{ touchAction: 'none', transformOrigin: 'center center' }}
-          className={`absolute top-0 left-0 z-30 bg-base-100/95 backdrop-blur-md border border-base-300 shadow-lg rounded-full flex items-center justify-center select-none will-change-transform ${
+          className={`absolute top-0 left-0 z-30 bg-base-100/95 backdrop-blur-md border border-base-300 shadow-lg rounded-full flex items-center justify-center cursor-grab active:cursor-grabbing select-none will-change-transform ${
             isDraggingMoved ? 'opacity-95 ring-2 ring-primary/30' : ''
           } ${
             isVertical
@@ -961,6 +1030,7 @@ export function FloatingToolPalette({
         >
           <div
             ref={contentElRef}
+            style={{ touchAction: 'none' }}
             className={
               isVertical
                 ? 'flex flex-col items-center gap-2.5 px-3 py-3.5 max-h-full overflow-y-auto thin-scrollbar'
@@ -969,7 +1039,6 @@ export function FloatingToolPalette({
           >
           {/* Drag Handle */}
           <div
-            onPointerDown={beginDrag}
             title="ドラッグして上下左右へ移動 / 四隅で格納"
             style={{ touchAction: 'none', transformOrigin: 'center center' }}
             className={`flex items-center justify-center text-base-content/40 hover:text-base-content/75 cursor-grab active:cursor-grabbing shrink-0 ${
