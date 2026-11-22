@@ -39,6 +39,9 @@ export interface FlipBookViewerHandle {
   flipPrev: () => void;
   undo: () => void;
   redo: () => void;
+  /** Imperatively apply shared sidebar animation frame t in [0 (closed), 1 (open)] */
+  setSidebarAnimFrame: (t: number, layoutShift: number) => void;
+  reclampZoom: () => void;
 }
 
 interface FlipBookViewerProps {
@@ -47,6 +50,38 @@ interface FlipBookViewerProps {
   aspectRatio: number;
   layers: string[];
   allPageStrokes: PageStrokes[];
+  /** Settled right-side inset reserved by the open desktop sidebar (0 while closed or animating) */
+  rightInset: number;
+}
+
+function computeBookDims(
+  stageW: number,
+  stageH: number,
+  aspectRatio: number,
+  spreadMode: 'single' | 'double',
+): { pageW: number; pageH: number; bookW: number; bookH: number } {
+  const padX = stageW < 640 ? 12 : 24;
+  const padY = stageH < 520 ? 12 : 20;
+  const availW = Math.max(240, stageW - padX);
+  const availH = Math.max(240, stageH - padY);
+  const safeAspect = Math.max(0.45, Math.min(1.8, aspectRatio || 0.707));
+
+  const slots = spreadMode === 'double' ? 2 : 1;
+  let h = availH;
+  let w = h * safeAspect;
+  if (w * slots > availW) {
+    w = availW / slots;
+    h = w / safeAspect;
+  }
+
+  const pw = Math.floor(w);
+  const ph = Math.floor(h);
+  return {
+    pageW: pw,
+    pageH: ph,
+    bookW: pw * slots,
+    bookH: ph,
+  };
 }
 
 interface DoubleFlipSession {
@@ -72,10 +107,16 @@ interface SingleFlipSession {
 type FlipSession = DoubleFlipSession | SingleFlipSession;
 
 export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerProps>(
-  function FlipBookViewer({ workbookId, pdfManager, aspectRatio, layers, allPageStrokes }, ref) {
+  function FlipBookViewer(
+    { workbookId, pdfManager, aspectRatio, layers, allPageStrokes, rightInset },
+    ref,
+  ) {
     const stageRef = useRef<HTMLDivElement | null>(null);
+    const bookMotionRef = useRef<HTMLDivElement | null>(null);
+    const rightArrowMotionRef = useRef<HTMLDivElement | null>(null);
     const zoomWrapperRef = useRef<HTMLDivElement | null>(null);
     const bookRef = useRef<HTMLDivElement | null>(null);
+    const sidebarFrameRef = useRef({ t: 0, layoutShift: 0 });
     const leafRef = useRef<HTMLDivElement | null>(null);
     const frontLeafRef = useRef<HTMLDivElement | null>(null);
     const backLeafRef = useRef<HTMLDivElement | null>(null);
@@ -130,31 +171,80 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       return () => observer.disconnect();
     }, []);
 
-    // Compute exact page dimensions fitting neatly inside the stage with minimal margins
-    const { pageW, pageH, bookW, bookH } = useMemo(() => {
-      const padX = stageSize.width < 640 ? 12 : 24;
-      const padY = stageSize.height < 520 ? 12 : 20;
-      const availW = Math.max(240, stageSize.width - padX);
-      const availH = Math.max(240, stageSize.height - padY);
-      const safeAspect = Math.max(0.45, Math.min(1.8, aspectRatio || 0.707));
+    const effectiveStageW = Math.max(240, stageSize.width - rightInset);
 
-      const slots = spreadMode === 'double' ? 2 : 1;
-      let h = availH;
-      let w = h * safeAspect;
-      if (w * slots > availW) {
-        w = availW / slots;
-        h = w / safeAspect;
+    // Compute exact page dimensions fitting neatly inside the available stage area
+    const { pageW, pageH, bookW, bookH } = useMemo(
+      () => computeBookDims(effectiveStageW, stageSize.height, aspectRatio, spreadMode),
+      [effectiveStageW, stageSize.height, aspectRatio, spreadMode],
+    );
+
+    const stageSizeRef = useRef(stageSize);
+    stageSizeRef.current = stageSize;
+    const rightInsetRef = useRef(rightInset);
+    rightInsetRef.current = rightInset;
+    const bookWRef = useRef(bookW);
+    bookWRef.current = bookW;
+    const aspectRatioRef = useRef(aspectRatio);
+    aspectRatioRef.current = aspectRatio;
+    const spreadModeRef = useRef(spreadMode);
+    spreadModeRef.current = spreadMode;
+
+    // Apply unified sidebar animation frame synchronously to both PDF (simultaneous zoom + shift,
+    // zero center drift) and right page-turn button (locked 1:1 to sidebar left edge).
+    const applySidebarAnimFrame = useCallback((t: number, layoutShift: number) => {
+      const clampedT = Math.max(0, Math.min(1, t));
+      const safeShift = Math.max(0, layoutShift);
+      sidebarFrameRef.current = { t: clampedT, layoutShift: safeShift };
+
+      const arrowEl = rightArrowMotionRef.current;
+      if (arrowEl) {
+        const dx = -clampedT * safeShift;
+        arrowEl.style.transform =
+          Math.abs(dx) < 0.05 ? '' : `translate3d(${dx.toFixed(2)}px, 0px, 0)`;
       }
 
-      const pw = Math.floor(w);
-      const ph = Math.floor(h);
-      return {
-        pageW: pw,
-        pageH: ph,
-        bookW: pw * slots,
-        bookH: ph,
-      };
-    }, [stageSize, aspectRatio, spreadMode]);
+      const motionEl = bookMotionRef.current;
+      if (motionEl) {
+        const fullW = stageSizeRef.current.width;
+        const fullH = stageSizeRef.current.height;
+        if (safeShift <= 0.5 || fullW <= 0 || fullH <= 0) {
+          motionEl.style.transform = '';
+          return;
+        }
+        const closed = computeBookDims(
+          fullW,
+          fullH,
+          aspectRatioRef.current,
+          spreadModeRef.current,
+        );
+        const open = computeBookDims(
+          Math.max(240, fullW - safeShift),
+          fullH,
+          aspectRatioRef.current,
+          spreadModeRef.current,
+        );
+
+        const closedCX = fullW / 2;
+        const openCX = (fullW - safeShift) / 2;
+        const targetCX = closedCX + (openCX - closedCX) * clampedT;
+        const targetW = closed.bookW + (open.bookW - closed.bookW) * clampedT;
+
+        const baseCX = (fullW - rightInsetRef.current) / 2;
+        const baseW = bookWRef.current;
+        const tx = targetCX - baseCX;
+        const s = baseW > 0 ? targetW / baseW : 1;
+        const isIdentity = Math.abs(tx) < 0.05 && Math.abs(s - 1) < 0.0005;
+        motionEl.style.transform = isIdentity
+          ? ''
+          : `translate3d(${tx.toFixed(2)}px, 0px, 0) scale(${s.toFixed(5)})`;
+      }
+    }, []);
+
+    // Keep DOM transform strictly in sync before paint whenever rightInset or dimensions settle
+    useLayoutEffect(() => {
+      applySidebarAnimFrame(sidebarFrameRef.current.t, sidebarFrameRef.current.layoutShift);
+    }, [rightInset, bookW, bookH, stageSize.width, stageSize.height, applySidebarAnimFrame]);
 
     // ===== Native-feel GPU Zoom & Pan Controller =====
     const MAX_ZOOM_SCALE = 8;
@@ -217,10 +307,10 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         }
 
         const ramp = Math.min(1, Math.max(0, (clampedS - 1) / 0.5));
-        const marginX = Math.min(96, stageSize.width * 0.12) * ramp;
+        const marginX = Math.min(96, effectiveStageW * 0.12) * ramp;
         const marginY = Math.min(96, stageSize.height * 0.12) * ramp;
 
-        const maxPanX = Math.max(0, (bookW * clampedS - stageSize.width) / 2 + marginX);
+        const maxPanX = Math.max(0, (bookW * clampedS - effectiveStageW) / 2 + marginX);
         const maxPanY = Math.max(0, (bookH * clampedS - stageSize.height) / 2 + marginY);
 
         const clampAxis = (val: number, max: number) => {
@@ -236,7 +326,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
           panY: clampAxis(py, maxPanY),
         };
       },
-      [bookW, bookH, stageSize.width, stageSize.height],
+      [bookW, bookH, effectiveStageW, stageSize.height],
     );
 
     const applyZoomDom = useCallback(
@@ -397,7 +487,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         const stageEl = stageRef.current;
         if (!stageEl) return;
         const rect = stageEl.getBoundingClientRect();
-        const midOffX = clientX - (rect.left + rect.width / 2);
+        const midOffX = clientX - (rect.left + (rect.width - rightInsetRef.current) / 2);
         const midOffY = clientY - (rect.top + rect.height / 2);
 
         const cur = liveZoomRef.current;
@@ -1278,8 +1368,25 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         flipPrev: () => triggerProgrammaticFlip('prev'),
         undo: handleUndo,
         redo: handleRedo,
+        setSidebarAnimFrame: applySidebarAnimFrame,
+        reclampZoom: () => {
+          const cur = liveZoomRef.current;
+          if (cur.scale > 1.02) {
+            const clamped = clampZoomPan(cur.scale, cur.panX, cur.panY, false);
+            applyZoomDom(clamped.scale, clamped.panX, clamped.panY);
+            setZoomPan(clamped.scale, clamped.panX, clamped.panY);
+          }
+        },
       }),
-      [triggerProgrammaticFlip, handleUndo, handleRedo],
+      [
+        triggerProgrammaticFlip,
+        handleUndo,
+        handleRedo,
+        applySidebarAnimFrame,
+        clampZoomPan,
+        applyZoomDom,
+        setZoomPan,
+      ],
     );
 
     // Keyboard navigation & Undo/Redo
@@ -1335,6 +1442,13 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
     const canGoLeft = leftArrowIsPrev ? prevTargetPage !== null : nextTargetPage !== null;
     const canGoRight = leftArrowIsPrev ? nextTargetPage !== null : prevTargetPage !== null;
 
+    // Ensure a newly mounted right arrow button immediately inherits the live sidebar offset
+    useLayoutEffect(() => {
+      if (canGoRight) {
+        applySidebarAnimFrame(sidebarFrameRef.current.t, sidebarFrameRef.current.layoutShift);
+      }
+    }, [canGoRight, applySidebarAnimFrame]);
+
     // Layout dimensions scaled by committedScale so settled zoom renders at 1:1 native Retina pixels
     const scaledPageW = Math.max(1, Math.round(pageW * committedScale));
     const scaledPageH = Math.max(1, Math.round(pageH * committedScale));
@@ -1347,7 +1461,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       <div
         ref={stageRef}
         className="relative flex-1 h-full flex items-center justify-center overflow-hidden bg-base-200 select-none isolate"
-        style={{ touchAction: 'none' }}
+        style={{ touchAction: 'none', paddingRight: rightInset }}
         {...gestureHandlers}
       >
         {/* Edge page-turn buttons */}
@@ -1365,18 +1479,28 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         )}
 
         {canGoRight && (
-          <button
-            type="button"
-            onPointerDown={(e) => e.stopPropagation()}
-            onTouchStart={(e) => e.stopPropagation()}
-            onClick={() => triggerProgrammaticFlip(leftArrowIsPrev ? 'next' : 'prev')}
-            aria-label={leftArrowIsPrev ? '次のページ' : '前のページ'}
-            className="hidden sm:flex absolute right-3.5 top-1/2 -translate-y-1/2 z-30 w-12 h-12 rounded-full items-center justify-center bg-base-100/90 backdrop-blur-md border border-base-300 shadow-md hover:bg-base-100 text-base-content/75 hover:text-base-content transition-colors active:scale-95"
-          >
-            <ChevronRight className="w-6 h-6" />
-          </button>
+          <div className="hidden sm:block absolute right-3.5 top-1/2 -translate-y-1/2 z-30">
+            <div ref={rightArrowMotionRef}>
+              <button
+                type="button"
+                onPointerDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+                onClick={() => triggerProgrammaticFlip(leftArrowIsPrev ? 'next' : 'prev')}
+                aria-label={leftArrowIsPrev ? '次のページ' : '前のページ'}
+                className="w-12 h-12 rounded-full flex items-center justify-center bg-base-100/90 backdrop-blur-md border border-base-300 shadow-md hover:bg-base-100 text-base-content/75 hover:text-base-content transition-colors active:scale-95"
+              >
+                <ChevronRight className="w-6 h-6" />
+              </button>
+            </div>
+          </div>
         )}
 
+        {/* GPU FLIP motion wrapper for smooth sidebar open/close resize */}
+        <div
+          ref={bookMotionRef}
+          className="shrink-0 flex items-center justify-center"
+          style={{ transformOrigin: 'center center' }}
+        >
         {/* Zoom / Pan wrapper (transform managed imperatively for 60/120fps) */}
         <div
           ref={zoomWrapperRef}
@@ -1632,6 +1756,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
               </div>
             )}
           </div>
+        </div>
         </div>
       </div>
     );

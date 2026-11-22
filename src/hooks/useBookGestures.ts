@@ -104,8 +104,9 @@ export function useBookGestures(callbacks: BookGestureCallbacks) {
 
     const getStageCenter = () => {
       const rect = el.getBoundingClientRect();
+      const pr = parseFloat(window.getComputedStyle(el).paddingRight) || 0;
       return {
-        cx: rect.left + rect.width / 2,
+        cx: rect.left + (rect.width - pr) / 2,
         cy: rect.top + rect.height / 2,
       };
     };

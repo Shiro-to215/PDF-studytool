@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { FileUp } from 'lucide-react';
 import {
@@ -16,13 +16,22 @@ import type {
 import { PdfDocumentManager } from '../utils/pdfEngine';
 import { getSpreadLayout, useViewerStore } from '../stores/useViewerStore';
 import { TopBar } from '../components/toolbar/TopBar';
-import { FloatingToolPalette } from '../components/toolbar/FloatingToolPalette';
+import {
+  FloatingToolPalette,
+  type FloatingToolPaletteHandle,
+} from '../components/toolbar/FloatingToolPalette';
 import {
   FlipBookViewer,
   type FlipBookViewerHandle,
 } from '../components/book/FlipBookViewer';
-import { StudySidebar } from '../components/sidebar/StudySidebar';
+import {
+  StudySidebar,
+  type StudySidebarHandle,
+} from '../components/sidebar/StudySidebar';
 import { ImportIndexModal } from '../components/home/ImportIndexModal';
+
+const SIDEBAR_ANIM_DURATION_MS = 400;
+const DESKTOP_LG_BREAKPOINT = 1024;
 
 interface StudyPageProps {
   workbookId: string;
@@ -30,6 +39,8 @@ interface StudyPageProps {
 
 export function StudyPage({ workbookId }: StudyPageProps) {
   const viewerRef = useRef<FlipBookViewerHandle | null>(null);
+  const paletteRef = useRef<FloatingToolPaletteHandle | null>(null);
+  const sidebarRef = useRef<StudySidebarHandle | null>(null);
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
   const relinkInputRef = useRef<HTMLInputElement | null>(null);
   const {
@@ -38,6 +49,7 @@ export function StudyPage({ workbookId }: StudyPageProps) {
     spreadMode,
     bindingDirection,
     coverSinglePage,
+    sidebarOpen,
     pageNavSeq,
     setTocUnitId,
     closeWorkbook,
@@ -78,8 +90,128 @@ export function StudyPage({ workbookId }: StudyPageProps) {
   const [reloadSeq, setReloadSeq] = useState(0);
   const [relinking, setRelinking] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [settledRightInset, setSettledRightInset] = useState(() =>
+    typeof window !== 'undefined' && window.innerWidth >= DESKTOP_LG_BREAKPOINT && sidebarOpen
+      ? 350
+      : 0,
+  );
   const lastSavedPageRef = useRef<number | null>(null);
   const lastSyncedNavSeqRef = useRef(0);
+  const sidebarOpenRef = useRef(sidebarOpen);
+  sidebarOpenRef.current = sidebarOpen;
+  const sidebarProgressRef = useRef(sidebarOpen ? 1 : 0);
+  const sidebarAnimRafRef = useRef<number | null>(null);
+  const sidebarInitializedRef = useRef(false);
+
+  const isWorkbookReady = Boolean(workbook);
+
+  const getLayoutShift = useCallback(() => {
+    const containerW =
+      stageContainerRef.current?.getBoundingClientRect().width ??
+      (typeof window !== 'undefined' ? window.innerWidth : 0);
+    if (containerW < DESKTOP_LG_BREAKPOINT) return 0;
+    return sidebarRef.current?.getWidth() ?? 350;
+  }, []);
+
+  const applySidebarSyncFrame = useCallback((t: number, layoutShift: number) => {
+    const clamped = Math.max(0, Math.min(1, t));
+    sidebarProgressRef.current = clamped;
+    sidebarRef.current?.setSlideProgress(clamped);
+    viewerRef.current?.setSidebarAnimFrame(clamped, layoutShift);
+    paletteRef.current?.setLiveRightInset(clamped * layoutShift);
+  }, []);
+
+  // Unified single-rAF 400ms linear animation syncing sidebar, PDF zoom+shift, right arrow, and pen palette
+  useLayoutEffect(() => {
+    if (!isWorkbookReady) {
+      sidebarInitializedRef.current = false;
+      return;
+    }
+
+    const layoutShift = getLayoutShift();
+    const targetT = sidebarOpen ? 1 : 0;
+
+    if (!sidebarInitializedRef.current) {
+      sidebarInitializedRef.current = true;
+      const nextInset = sidebarOpen ? layoutShift : 0;
+      setSettledRightInset(nextInset);
+      applySidebarSyncFrame(targetT, layoutShift);
+      return;
+    }
+
+    if (sidebarAnimRafRef.current !== null) {
+      cancelAnimationFrame(sidebarAnimRafRef.current);
+      sidebarAnimRafRef.current = null;
+    }
+
+    const startT = sidebarProgressRef.current;
+    const dist = Math.abs(targetT - startT);
+
+    // When closing, immediately restore full-width high-DPI PDF layout before first paint while
+    // keeping visual size/position identical via startT transform so zoom-in stays razor sharp.
+    if (targetT === 0) {
+      setSettledRightInset(0);
+    }
+
+    if (dist < 0.001) {
+      applySidebarSyncFrame(targetT, layoutShift);
+      setSettledRightInset(targetT === 1 ? layoutShift : 0);
+      viewerRef.current?.reclampZoom();
+      return;
+    }
+
+    // Apply exact frame 0 synchronously before browser paint
+    applySidebarSyncFrame(startT, layoutShift);
+
+    const duration = Math.max(1, SIDEBAR_ANIM_DURATION_MS * dist);
+    const startTime = performance.now();
+
+    const tick = (now: number) => {
+      const u = Math.min(1, (now - startTime) / duration);
+      // Gentle ease-out matching cubic-bezier(0.22, 1, 0.36, 1) across all 4 synced elements
+      const eased = 1 - Math.pow(1 - u, 3.2);
+      const curT = startT + (targetT - startT) * eased;
+      applySidebarSyncFrame(curT, layoutShift);
+
+      if (u < 1) {
+        sidebarAnimRafRef.current = requestAnimationFrame(tick);
+      } else {
+        sidebarAnimRafRef.current = null;
+        setSettledRightInset(targetT === 1 ? layoutShift : 0);
+        viewerRef.current?.reclampZoom();
+      }
+    };
+
+    sidebarAnimRafRef.current = requestAnimationFrame(tick);
+  }, [sidebarOpen, isWorkbookReady, getLayoutShift, applySidebarSyncFrame]);
+
+  // Keep synced on viewport resize / iPad rotation when not actively animating
+  useEffect(() => {
+    if (!isWorkbookReady) return;
+    const el = stageContainerRef.current;
+    if (!el) return;
+
+    const handleResize = () => {
+      if (sidebarAnimRafRef.current !== null) return;
+      const layoutShift = getLayoutShift();
+      const t = sidebarOpenRef.current ? 1 : 0;
+      setSettledRightInset(t === 1 ? layoutShift : 0);
+      applySidebarSyncFrame(t, layoutShift);
+    };
+
+    const observer = new ResizeObserver(handleResize);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isWorkbookReady, getLayoutShift, applySidebarSyncFrame]);
+
+  useEffect(() => {
+    return () => {
+      if (sidebarAnimRafRef.current !== null) {
+        cancelAnimationFrame(sidebarAnimRafRef.current);
+        sidebarAnimRafRef.current = null;
+      }
+    };
+  }, []);
 
   // Initialize PdfDocumentManager from pdfFiles (ArrayBuffer) strictly per workbookId / reloadSeq
   useEffect(() => {
@@ -209,7 +341,7 @@ export function StudyPage({ workbookId }: StudyPageProps) {
   return (
     <div className="fixed inset-0 h-[100dvh] w-[100dvw] flex flex-col overflow-hidden bg-base-200 text-base-content">
       <div className="flex-1 min-h-0 flex overflow-hidden relative">
-        {/* Book Stage + Floating Hamburger Menu + Floating Pen Palette */}
+        {/* Book Stage + Floating Hamburger Menu + Floating Pen Palette (always full width; sidebar offset driven by single rAF) */}
         <div
           ref={stageContainerRef}
           className="relative flex-1 min-h-0 flex flex-col overflow-hidden"
@@ -253,10 +385,12 @@ export function StudyPage({ workbookId }: StudyPageProps) {
               aspectRatio={aspectRatio}
               layers={workbook.layers}
               allPageStrokes={allPageStrokes}
+              rightInset={settledRightInset}
             />
           )}
 
           <FloatingToolPalette
+            ref={paletteRef}
             workbookId={workbook.id}
             boundsRef={stageContainerRef}
             onUndo={() => viewerRef.current?.undo()}
@@ -264,8 +398,9 @@ export function StudyPage({ workbookId }: StudyPageProps) {
           />
         </div>
 
-        {/* Right Sidebar */}
+        {/* Right Sidebar (with dual-purpose overhang ear tab, synced 1:1 with StudyPage rAF) */}
         <StudySidebar
+          ref={sidebarRef}
           workbook={workbook}
           pageStates={pageStates}
           unitNodes={unitNodes}

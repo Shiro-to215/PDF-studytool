@@ -1,5 +1,7 @@
 import {
+  forwardRef,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useRef,
   useState,
@@ -164,7 +166,6 @@ function computeTargetPosition(
   boundsW: number,
   boundsH: number,
   safeBottom: number,
-  avoidTopRight: boolean,
 ): { x: number; y: number } {
   const margin = 14;
   const bottomMargin = 14 + safeBottom;
@@ -174,10 +175,8 @@ function computeTargetPosition(
 
   if (target.kind === 'corner') {
     x = target.corner.endsWith('left') ? margin : boundsW - elW - margin;
-    // Offset top corners below the 54px floating hamburger / panel buttons when those buttons are visible
-    const shouldOffsetTop =
-      target.corner === 'top-left' || (target.corner === 'top-right' && avoidTopRight);
-    const topOffset = shouldOffsetTop ? margin + 66 : margin;
+    // Offset both top corners below the floating hamburger (top-left) and panel / sidebar ear-tab close button (top-right)
+    const topOffset = target.corner.startsWith('top') ? margin + 66 : margin;
     y = target.corner.startsWith('top') ? topOffset : boundsH - elH - bottomMargin;
   } else {
     switch (target.edge) {
@@ -369,6 +368,11 @@ function animateLiquidPill(
   }
 }
 
+export interface FloatingToolPaletteHandle {
+  /** Imperatively sync horizontal bounds to live right sidebar inset during 400ms animation */
+  setLiveRightInset: (inset: number) => void;
+}
+
 interface FloatingToolPaletteProps {
   workbookId: string;
   boundsRef: RefObject<HTMLElement | null>;
@@ -376,12 +380,10 @@ interface FloatingToolPaletteProps {
   onRedo: () => void;
 }
 
-export function FloatingToolPalette({
-  workbookId,
-  boundsRef,
-  onUndo,
-  onRedo,
-}: FloatingToolPaletteProps) {
+export const FloatingToolPalette = forwardRef<
+  FloatingToolPaletteHandle,
+  FloatingToolPaletteProps
+>(function FloatingToolPalette({ workbookId, boundsRef, onUndo, onRedo }, ref) {
   const {
     interactionMode,
     tool,
@@ -450,6 +452,7 @@ export function FloatingToolPalette({
   const suppressClickRef = useRef(false);
   const suppressClickTimerRef = useRef<number | null>(null);
   const activeAnimsRef = useRef<Animation[]>([]);
+  const liveRightInsetRef = useRef(0);
   const flipOriginRef = useRef<{
     cx: number;
     cy: number;
@@ -591,6 +594,47 @@ export function FloatingToolPalette({
     animateLiquidPill(pillEl, targetBtn, isVertical ? 'v' : 'h', toolPillPrevRef, toolPillAnimRef, 'spring');
   }, [tool, isVertical, paletteState.collapsed]);
 
+  // Close popovers when sidebar toggles; position updates are driven synchronously by StudyPage's rAF
+  useEffect(() => {
+    setActivePopover(null);
+  }, [sidebarOpen]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      setLiveRightInset(inset: number) {
+        liveRightInsetRef.current = Math.max(0, inset);
+        if (dragStateRef.current?.moved) return;
+        if (activeAnimsRef.current.length > 0) return;
+
+        const el = paletteElRef.current;
+        const boundsEl = boundsRef.current;
+        if (!el || !boundsEl) return;
+
+        const boundsRect = boundsEl.getBoundingClientRect();
+        const availW = Math.max(240, boundsRect.width - liveRightInsetRef.current);
+        const elW = el.offsetWidth || el.getBoundingClientRect().width;
+        const elH = el.offsetHeight || el.getBoundingClientRect().height;
+        const curPalette = paletteStateRef.current;
+        const target: SnapTarget = curPalette.collapsed
+          ? { kind: 'corner', corner: curPalette.corner }
+          : { kind: 'edge', edge: curPalette.dock };
+
+        const { x, y } = computeTargetPosition(
+          target,
+          elW,
+          elH,
+          availW,
+          boundsRect.height,
+          getSafeBottom(),
+        );
+        el.style.transition = 'none';
+        el.style.transform = `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0)`;
+      },
+    }),
+    [boundsRef],
+  );
+
   // Unified pixel positioning + smooth glide/unfold/liquid-morph animation on release/toggle
   useLayoutEffect(() => {
     const el = paletteElRef.current;
@@ -609,6 +653,7 @@ export function FloatingToolPalette({
     }
 
     const boundsRect = boundsEl.getBoundingClientRect();
+    const availBoundsW = Math.max(240, boundsRect.width - liveRightInsetRef.current);
     const elW = el.offsetWidth || el.getBoundingClientRect().width;
     const elH = el.offsetHeight || el.getBoundingClientRect().height;
     const target: SnapTarget = paletteState.collapsed
@@ -619,10 +664,9 @@ export function FloatingToolPalette({
       target,
       elW,
       elH,
-      boundsRect.width,
+      availBoundsW,
       boundsRect.height,
       getSafeBottom(),
-      !sidebarOpen,
     );
 
     const origin = flipOriginRef.current;
@@ -816,7 +860,7 @@ export function FloatingToolPalette({
       } else {
         const startX = Math.max(
           0,
-          Math.min(boundsRect.width - elW, origin.cx - boundsRect.left - elW / 2),
+          Math.min(availBoundsW - elW, origin.cx - boundsRect.left - elW / 2),
         );
         const startY = Math.max(
           0,
@@ -837,7 +881,7 @@ export function FloatingToolPalette({
       el.style.opacity = '';
       el.style.transform = `translate3d(${targetX.toFixed(1)}px, ${targetY.toFixed(1)}px, 0)`;
     }
-  }, [paletteState, dragEndNonce, boundsSize, sidebarOpen, isDraggingMoved, dragState, boundsRef]);
+  }, [paletteState, dragEndNonce, boundsSize, isDraggingMoved, dragState, boundsRef]);
 
   const layout = getSpreadLayout(
     currentPage,
@@ -943,7 +987,17 @@ export function FloatingToolPalette({
 
       const dragLeft = current.leftInBounds + (e.clientX - current.startX);
       const dragTop = current.topInBounds + (e.clientY - current.startY);
-      const preview = resolveSnapTarget(dragLeft, dragTop, current.elW, current.elH, bounds);
+      const effectiveBounds = {
+        width: Math.max(240, bounds.width - liveRightInsetRef.current),
+        height: bounds.height,
+      } as DOMRect;
+      const preview = resolveSnapTarget(
+        dragLeft,
+        dragTop,
+        current.elW,
+        current.elH,
+        effectiveBounds,
+      );
 
       const next: DragState = {
         ...current,
@@ -1112,6 +1166,7 @@ export function FloatingToolPalette({
     if (!boundsRect || !paletteRect || !btnRect) return null;
 
     const dock = paletteState.dock;
+    const availW = Math.max(240, boundsRect.width - liveRightInsetRef.current);
     const gap = 12;
     let anchorX = 0;
     let anchorY = 0;
@@ -1119,13 +1174,13 @@ export function FloatingToolPalette({
     if (dock === 'bottom') {
       anchorX = Math.max(
         clampHalfX,
-        Math.min(boundsRect.width - clampHalfX, btnRect.left + btnRect.width / 2 - boundsRect.left),
+        Math.min(availW - clampHalfX, btnRect.left + btnRect.width / 2 - boundsRect.left),
       );
       anchorY = paletteRect.top - boundsRect.top - gap;
     } else if (dock === 'top') {
       anchorX = Math.max(
         clampHalfX,
-        Math.min(boundsRect.width - clampHalfX, btnRect.left + btnRect.width / 2 - boundsRect.left),
+        Math.min(availW - clampHalfX, btnRect.left + btnRect.width / 2 - boundsRect.left),
       );
       anchorY = paletteRect.bottom - boundsRect.top + gap;
     } else if (dock === 'left') {
@@ -1188,27 +1243,20 @@ export function FloatingToolPalette({
   const previewGhost = (() => {
     if (!isDraggingMoved || !dragState?.preview) return null;
     const p = dragState.preview;
+    const availW = Math.max(240, boundsSize.w - liveRightInsetRef.current);
     const gw =
       p.kind === 'corner'
         ? 72
         : p.edge === 'left' || p.edge === 'right'
           ? 92
-          : Math.min(440, boundsSize.w - 32);
+          : Math.min(440, availW - 32);
     const gh =
       p.kind === 'corner'
         ? 72
         : p.edge === 'left' || p.edge === 'right'
           ? Math.min(390, boundsSize.h - 32)
           : 66;
-    const pos = computeTargetPosition(
-      p,
-      gw,
-      gh,
-      boundsSize.w,
-      boundsSize.h,
-      getSafeBottom(),
-      !sidebarOpen,
-    );
+    const pos = computeTargetPosition(p, gw, gh, availW, boundsSize.h, getSafeBottom());
     return { w: gw, h: gh, x: pos.x, y: pos.y };
   })();
 
@@ -1641,4 +1689,4 @@ export function FloatingToolPalette({
       )}
     </>
   );
-}
+});

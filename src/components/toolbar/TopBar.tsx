@@ -8,7 +8,6 @@ import {
   Layers,
   Menu,
   Moon,
-  PanelRight,
   Plus,
   Sun,
   X,
@@ -31,12 +30,10 @@ export function TopBar({ workbook }: TopBarProps) {
     spreadMode,
     bindingDirection,
     coverSinglePage,
-    sidebarOpen,
     closeWorkbook,
     setCurrentPage,
     setSpreadMode,
     setCoverSinglePage,
-    toggleSidebar,
   } = useViewerStore();
 
   const {
@@ -344,24 +341,6 @@ export function TopBar({ workbook }: TopBarProps) {
           </div>
         )}
       </div>
-
-      {/* Independent Floating Top-Right Panel Button (hidden while sidebar is open) */}
-      {!sidebarOpen && (
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          onClick={() => {
-            setMenuOpen(false);
-            toggleSidebar();
-          }}
-          aria-label="右パネルを開く"
-          title="記録・目次・復習パネルを開く"
-          className="absolute top-[calc(12px+env(safe-area-inset-top))] right-3.5 z-40 w-[54px] h-[54px] rounded-full flex items-center justify-center bg-base-100/95 text-base-content/80 border border-base-300 shadow-lg backdrop-blur-md hover:bg-base-100 hover:text-base-content transition-colors select-none"
-        >
-          <PanelRight className="w-6 h-6" />
-        </button>
-      )}
     </>
   );
 }
