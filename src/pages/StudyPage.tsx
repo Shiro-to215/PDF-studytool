@@ -14,7 +14,7 @@ import type {
   UnitNode,
 } from '../types/models';
 import { PdfDocumentManager } from '../utils/pdfEngine';
-import { useViewerStore } from '../stores/useViewerStore';
+import { getSpreadLayout, useViewerStore } from '../stores/useViewerStore';
 import { TopBar } from '../components/toolbar/TopBar';
 import { FloatingToolPalette } from '../components/toolbar/FloatingToolPalette';
 import {
@@ -32,7 +32,16 @@ export function StudyPage({ workbookId }: StudyPageProps) {
   const viewerRef = useRef<FlipBookViewerHandle | null>(null);
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
   const relinkInputRef = useRef<HTMLInputElement | null>(null);
-  const { currentPage, closeWorkbook } = useViewerStore();
+  const {
+    currentPage,
+    pageCount,
+    spreadMode,
+    bindingDirection,
+    coverSinglePage,
+    pageNavSeq,
+    setTocUnitId,
+    closeWorkbook,
+  } = useViewerStore();
 
   const workbook = useLiveQuery(
     () => db.workbooks.get(workbookId),
@@ -70,6 +79,7 @@ export function StudyPage({ workbookId }: StudyPageProps) {
   const [relinking, setRelinking] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const lastSavedPageRef = useRef<number | null>(null);
+  const lastSyncedNavSeqRef = useRef(0);
 
   // Initialize PdfDocumentManager from pdfFiles (ArrayBuffer) strictly per workbookId / reloadSeq
   useEffect(() => {
@@ -117,6 +127,51 @@ export function StudyPage({ workbookId }: StudyPageProps) {
     }, 350);
     return () => clearTimeout(timer);
   }, [workbookId, currentPage]);
+
+  // Reset TOC sync tracker when switching workbooks
+  useEffect(() => {
+    lastSyncedNavSeqRef.current = 0;
+  }, [workbookId]);
+
+  // Sync TOC hierarchy automatically on page turns (prefers the earlier page / earlier problem)
+  useEffect(() => {
+    if (pageNavSeq === 0 || pageNavSeq === lastSyncedNavSeqRef.current) return;
+    lastSyncedNavSeqRef.current = pageNavSeq;
+
+    if (unitNodes.length === 0 || problems.length === 0) return;
+
+    const layout = getSpreadLayout(
+      currentPage,
+      pageCount,
+      spreadMode,
+      bindingDirection,
+      coverSinglePage,
+    );
+    const visiblePages = Array.from(
+      new Set(layout.pages.length > 0 ? layout.pages : [currentPage]),
+    ).sort((a, b) => a - b);
+
+    const validUnitIds = new Set(unitNodes.map((u) => u.id));
+    for (const pageNum of visiblePages) {
+      const firstLinked = problems
+        .filter((p) => p.pageNumber === pageNum && p.unitId !== null && validUnitIds.has(p.unitId))
+        .sort((a, b) => a.order - b.order)[0];
+      if (firstLinked?.unitId) {
+        setTocUnitId(firstLinked.unitId);
+        return;
+      }
+    }
+  }, [
+    pageNavSeq,
+    currentPage,
+    pageCount,
+    spreadMode,
+    bindingDirection,
+    coverSinglePage,
+    unitNodes,
+    problems,
+    setTocUnitId,
+  ]);
 
   const handleRelinkPdf = async (file: File | null) => {
     if (!file) return;

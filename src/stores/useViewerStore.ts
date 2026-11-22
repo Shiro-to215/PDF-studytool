@@ -103,6 +103,8 @@ interface ViewerStore {
   zoomResetSeq: number;
   sidebarOpen: boolean;
   sidebarTab: SidebarTab;
+  tocUnitId: string | null;
+  pageNavSeq: number;
   reviewQueue: number[];
   reviewQueueIndex: number;
 
@@ -117,7 +119,7 @@ interface ViewerStore {
     reviewQueue?: number[];
   }) => void;
   closeWorkbook: () => void;
-  setCurrentPage: (page: number) => void;
+  setCurrentPage: (page: number, options?: { syncToc?: boolean }) => void;
   setSpreadMode: (mode: SpreadMode) => void;
   setBindingDirection: (dir: BindingDirection) => void;
   setCoverSinglePage: (coverSingle: boolean) => void;
@@ -126,6 +128,7 @@ interface ViewerStore {
   setSidebarOpen: (open: boolean) => void;
   toggleSidebar: () => void;
   setSidebarTab: (tab: SidebarTab) => void;
+  setTocUnitId: (unitId: string | null) => void;
   startReviewQueue: (pages: number[], startPage?: number) => void;
   stepReviewQueue: (delta: -1 | 1) => void;
   clearReviewQueue: () => void;
@@ -144,6 +147,8 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
   zoomResetSeq: 0,
   sidebarOpen: true,
   sidebarTab: 'record',
+  tocUnitId: null,
+  pageNavSeq: 0,
   reviewQueue: [],
   reviewQueueIndex: 0,
 
@@ -171,6 +176,8 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
       scale: 1,
       panX: 0,
       panY: 0,
+      tocUnitId: null,
+      pageNavSeq: 0,
       reviewQueue: queue,
       reviewQueueIndex: qIndex >= 0 ? qIndex : 0,
     });
@@ -179,6 +186,8 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
   closeWorkbook: () =>
     set({
       activeWorkbookId: null,
+      tocUnitId: null,
+      pageNavSeq: 0,
       reviewQueue: [],
       reviewQueueIndex: 0,
       scale: 1,
@@ -186,11 +195,13 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
       panY: 0,
     }),
 
-  setCurrentPage: (page) => {
-    const { pageCount } = get();
+  setCurrentPage: (page, options) => {
+    const { pageCount, currentPage, pageNavSeq } = get();
     const safePage = Math.max(1, Math.min(pageCount || 1, page));
+    const shouldSyncToc = options?.syncToc !== false && safePage !== currentPage;
     set({
       currentPage: safePage,
+      pageNavSeq: shouldSyncToc ? pageNavSeq + 1 : pageNavSeq,
       scale: 1,
       panX: 0,
       panY: 0,
@@ -219,6 +230,7 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarTab: (sidebarTab) => set({ sidebarTab, sidebarOpen: true }),
+  setTocUnitId: (tocUnitId) => set({ tocUnitId }),
 
   startReviewQueue: (pages, startPage) => {
     const unique = Array.from(new Set(pages)).sort((a, b) => a - b);
