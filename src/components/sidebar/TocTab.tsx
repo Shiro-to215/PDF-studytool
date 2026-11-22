@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useLayoutEffect, useMemo, useRef } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -12,6 +12,12 @@ import {
   type UnitNode,
 } from '../../types/models';
 import { getSpreadLayout, useViewerStore } from '../../stores/useViewerStore';
+
+const TOC_ANIM_DURATION_MS = 360;
+const TOC_ANIM_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
+const TOC_STAGGER_STEP_MS = 28;
+const TOC_STAGGER_MAX_DELAY_MS = 140;
+const TOC_MAX_STAGGER_ITEMS = 30;
 
 interface TocTabProps {
   unitNodes: UnitNode[];
@@ -73,7 +79,14 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
     return new Set(layout.pages.length > 0 ? layout.pages : [currentPage]);
   }, [currentPage, pageCount, spreadMode, bindingDirection, coverSinglePage]);
 
-  const { unitById, childrenByParent, problemsByUnit, statsByUnit } = useMemo(() => {
+  const {
+    unitById,
+    childrenByParent,
+    problemsByUnit,
+    statsByUnit,
+    depthByUnit,
+    preorderByUnit,
+  } = useMemo(() => {
     const byId = new Map<string, UnitNode>();
     const cMap = new Map<string | null, UnitNode[]>();
     const sortedUnits = [...unitNodes].sort((a, b) => a.order - b.order);
@@ -118,11 +131,32 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
 
     for (const u of sortedUnits) computeStats(u.id);
 
+    const dMap = new Map<string, number>();
+    const preMap = new Map<string, number>();
+    let orderCursor = 0;
+    const walkTree = (parentId: string | null, depth: number) => {
+      for (const node of cMap.get(parentId) ?? []) {
+        if (dMap.has(node.id)) continue;
+        dMap.set(node.id, depth);
+        preMap.set(node.id, orderCursor++);
+        walkTree(node.id, depth + 1);
+      }
+    };
+    walkTree(null, 1);
+    for (const u of sortedUnits) {
+      if (!dMap.has(u.id)) {
+        dMap.set(u.id, 1);
+        preMap.set(u.id, orderCursor++);
+      }
+    }
+
     return {
       unitById: byId,
       childrenByParent: cMap,
       problemsByUnit: pMap,
       statsByUnit: sMap,
+      depthByUnit: dMap,
+      preorderByUnit: preMap,
     };
   }, [unitNodes, problems, visiblePageSet]);
 
@@ -130,6 +164,118 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
   const activeUnitId =
     tocUnitId !== null && unitById.has(tocUnitId) ? tocUnitId : null;
   const activeUnit = activeUnitId ? unitById.get(activeUnitId) ?? null : null;
+
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const prevUnitIdRef = useRef<string | null | undefined>(undefined);
+  const runningAnimsRef = useRef<Animation[]>([]);
+  const treeOrderRef = useRef({ depthByUnit, preorderByUnit });
+  treeOrderRef.current = { depthByUnit, preorderByUnit };
+
+  // Short directional slide + staggered fade-in whenever the TOC hierarchy changes
+  useLayoutEffect(() => {
+    const prevId = prevUnitIdRef.current;
+    prevUnitIdRef.current = activeUnitId;
+
+    // Skip on initial mount or when hierarchy hasn't actually changed
+    if (prevId === undefined || prevId === activeUnitId) return;
+
+    // Cancel any in-flight animations from a previous rapid navigation
+    for (const anim of runningAnimsRef.current) {
+      try {
+        anim.cancel();
+      } catch {
+        // ignore
+      }
+    }
+    runningAnimsRef.current = [];
+
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = 0;
+    }
+
+    const root = containerRef.current;
+    if (!root) return;
+    if (
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    ) {
+      return;
+    }
+
+    const { depthByUnit: dMap, preorderByUnit: preMap } = treeOrderRef.current;
+    const prevDepth = prevId === null ? 0 : dMap.get(prevId) ?? 1;
+    const nextDepth = activeUnitId === null ? 0 : dMap.get(activeUnitId) ?? 1;
+    const forward =
+      nextDepth !== prevDepth
+        ? nextDepth > prevDepth
+        : prevId !== null && activeUnitId !== null
+          ? (preMap.get(activeUnitId) ?? 0) >= (preMap.get(prevId) ?? 0)
+          : true;
+
+    const inX = forward ? 26 : -26;
+    const started: Animation[] = [];
+
+    const headerEl = root.querySelector<HTMLElement>('[data-toc-header]');
+    if (headerEl && typeof headerEl.animate === 'function') {
+      started.push(
+        headerEl.animate(
+          [
+            { transform: `translateX(${Math.round(inX * 0.5)}px)`, opacity: 0 },
+            { transform: 'translateX(0px)', opacity: 1 },
+          ],
+          {
+            duration: Math.round(TOC_ANIM_DURATION_MS * 0.8),
+            easing: TOC_ANIM_EASING,
+            fill: 'both',
+          },
+        ),
+      );
+    }
+
+    const itemEls = root.querySelectorAll<HTMLElement>('[data-toc-item]');
+    const count = Math.min(itemEls.length, TOC_MAX_STAGGER_ITEMS);
+    for (let i = 0; i < count; i++) {
+      const el = itemEls[i];
+      if (typeof el.animate !== 'function') continue;
+      started.push(
+        el.animate(
+          [
+            { transform: `translateX(${inX}px)`, opacity: 0 },
+            { transform: 'translateX(0px)', opacity: 1 },
+          ],
+          {
+            duration: TOC_ANIM_DURATION_MS,
+            delay: Math.min(i * TOC_STAGGER_STEP_MS, TOC_STAGGER_MAX_DELAY_MS),
+            easing: TOC_ANIM_EASING,
+            fill: 'both',
+          },
+        ),
+      );
+    }
+
+    runningAnimsRef.current = started;
+
+    // Release finished WAAPI layers cleanly (important for WebKit/iPadOS compositing)
+    let cancelled = false;
+    void Promise.all(started.map((a) => a.finished.catch(() => {}))).then(() => {
+      if (cancelled) return;
+      for (const a of started) {
+        try {
+          a.cancel();
+        } catch {
+          // ignore
+        }
+      }
+      if (runningAnimsRef.current === started) {
+        runningAnimsRef.current = [];
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeUnitId]);
 
   // Breadcrumb path from top-level chapter down to activeUnit
   const breadcrumb = useMemo(() => {
@@ -177,10 +323,13 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
   }
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div ref={containerRef} className="flex-1 flex flex-col overflow-hidden">
       {/* Top Bar: Root summary OR Spacious Drill-down back + breadcrumb */}
       {activeUnit === null ? (
-        <div className="px-4 py-3.5 border-b border-base-300 flex items-center justify-between shrink-0">
+        <div
+          data-toc-header
+          className="px-4 py-3.5 border-b border-base-300 flex items-center justify-between shrink-0"
+        >
           <span className="text-sm font-semibold text-base-content/70">
             全 {problems.length} 問
           </span>
@@ -194,7 +343,10 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
           </button>
         </div>
       ) : (
-        <div className="px-4 py-3.5 border-b border-base-300 space-y-2.5 shrink-0 bg-base-100">
+        <div
+          data-toc-header
+          className="px-4 py-3.5 border-b border-base-300 space-y-2.5 shrink-0 bg-base-100"
+        >
           <div className="flex items-center justify-between gap-2">
             <button
               type="button"
@@ -239,7 +391,7 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
       )}
 
       {/* Drill-down Content: Spacious Unit Cards + Auto 2-3 Column Problem Tiles */}
-      <div className="flex-1 overflow-y-auto thin-scrollbar p-3.5 space-y-4">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden thin-scrollbar p-3.5 space-y-4">
         {displayedUnits.length > 0 && (
           <div className="space-y-2.5">
             {displayedUnits.map((unit) => {
@@ -254,6 +406,7 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
                 <button
                   key={unit.id}
                   type="button"
+                  data-toc-item
                   onClick={() => setTocUnitId(unit.id)}
                   className={`relative w-full overflow-hidden rounded-2xl border px-4 py-3.5 text-left transition-colors ${
                     stats.containsCurrent
@@ -304,7 +457,9 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
         {displayedProblems.length > 0 && (
           <div className="space-y-2">
             {activeUnit === null && displayedUnits.length > 0 && (
-              <p className="px-1 text-xs font-medium text-base-content/50">未分類の問題</p>
+              <p data-toc-item className="px-1 text-xs font-medium text-base-content/50">
+                未分類の問題
+              </p>
             )}
             <div className={`grid gap-2 ${getTileGridClass(displayedProblems)}`}>
               {displayedProblems.map((prob) => {
@@ -313,6 +468,7 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
                   <button
                     key={prob.id}
                     type="button"
+                    data-toc-item
                     onClick={() => handleSelectProblem(prob)}
                     title={`${prob.numberLabel}（P.${prob.pageNumber}）`}
                     className={`h-11 px-3 rounded-xl border flex items-center gap-2 min-w-0 transition-all active:scale-[0.98] ${
