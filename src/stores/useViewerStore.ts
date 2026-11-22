@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import type { BindingDirection, SpreadMode } from '../types/models';
 
 export type SidebarTab = 'record' | 'toc' | 'review';
-export type SpreadSide = 'left' | 'right';
 
 export interface SpreadLayout {
   leftPage: number | null;
@@ -102,7 +101,6 @@ interface ViewerStore {
   panX: number;
   panY: number;
   zoomResetSeq: number;
-  selectedSpreadSide: SpreadSide;
   sidebarOpen: boolean;
   sidebarTab: SidebarTab;
   reviewQueue: number[];
@@ -125,7 +123,6 @@ interface ViewerStore {
   setCoverSinglePage: (coverSingle: boolean) => void;
   setZoomPan: (scale: number, panX: number, panY: number) => void;
   resetZoom: () => void;
-  setSelectedSpreadSide: (side: SpreadSide) => void;
   setSidebarOpen: (open: boolean) => void;
   toggleSidebar: () => void;
   setSidebarTab: (tab: SidebarTab) => void;
@@ -145,7 +142,6 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
   panX: 0,
   panY: 0,
   zoomResetSeq: 0,
-  selectedSpreadSide: 'left',
   sidebarOpen: true,
   sidebarTab: 'record',
   reviewQueue: [],
@@ -162,8 +158,6 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
     reviewQueue,
   }) => {
     const targetPage = Math.max(1, Math.min(pageCount || 1, initialPage ?? lastPage ?? 1));
-    const layout = getSpreadLayout(targetPage, pageCount, spreadMode, bindingDirection, coverSinglePage);
-    const side: SpreadSide = layout.leftPage === targetPage ? 'left' : 'right';
     const queue = reviewQueue ?? [];
     const qIndex = queue.indexOf(targetPage);
 
@@ -177,7 +171,6 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
       scale: 1,
       panX: 0,
       panY: 0,
-      selectedSpreadSide: layout.leftPage !== null ? side : 'right',
       reviewQueue: queue,
       reviewQueueIndex: qIndex >= 0 ? qIndex : 0,
     });
@@ -194,37 +187,23 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
     }),
 
   setCurrentPage: (page) => {
-    const { pageCount, spreadMode, bindingDirection, coverSinglePage } = get();
+    const { pageCount } = get();
     const safePage = Math.max(1, Math.min(pageCount || 1, page));
-    const layout = getSpreadLayout(safePage, pageCount, spreadMode, bindingDirection, coverSinglePage);
-    const side: SpreadSide =
-      layout.leftPage === safePage
-        ? 'left'
-        : layout.rightPage === safePage
-          ? 'right'
-          : layout.leftPage !== null
-            ? 'left'
-            : 'right';
     set({
       currentPage: safePage,
-      selectedSpreadSide: side,
       scale: 1,
       panX: 0,
       panY: 0,
     });
   },
 
-  setSpreadMode: (spreadMode) => {
-    const { currentPage, pageCount, bindingDirection, coverSinglePage } = get();
-    const layout = getSpreadLayout(currentPage, pageCount, spreadMode, bindingDirection, coverSinglePage);
+  setSpreadMode: (spreadMode) =>
     set({
       spreadMode,
-      selectedSpreadSide: layout.leftPage !== null ? 'left' : 'right',
       scale: 1,
       panX: 0,
       panY: 0,
-    });
-  },
+    }),
 
   setBindingDirection: (bindingDirection) => set({ bindingDirection }),
   setCoverSinglePage: (coverSinglePage) => set({ coverSinglePage }),
@@ -237,7 +216,6 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
     }),
 
   resetZoom: () => set((s) => ({ zoomResetSeq: s.zoomResetSeq + 1 })),
-  setSelectedSpreadSide: (selectedSpreadSide) => set({ selectedSpreadSide }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarTab: (sidebarTab) => set({ sidebarTab, sidebarOpen: true }),

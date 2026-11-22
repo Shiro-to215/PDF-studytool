@@ -1,10 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
-  Check,
   ChevronDown,
   ChevronRight,
-  Copy,
-  ExternalLink,
   Eye,
   EyeOff,
   Lightbulb,
@@ -32,9 +29,8 @@ interface RecordCardProps {
   recordKey: string;
   values: RecordCardValues;
   customReasons: string[];
-  workbookTitle: string;
   pageNumber: number;
-  geminiChatUrl?: string;
+  showPageBadge?: boolean;
   onPatch: (patch: {
     status?: StudyStatus;
     missReasons?: string[];
@@ -51,9 +47,8 @@ export function RecordCard({
   recordKey,
   values,
   customReasons,
-  workbookTitle,
   pageNumber,
-  geminiChatUrl,
+  showPageBadge = false,
   onPatch,
   onAddCustomReason,
 }: RecordCardProps) {
@@ -65,12 +60,13 @@ export function RecordCard({
 
   const [addingHint, setAddingHint] = useState(false);
   const [hintDraft, setHintDraft] = useState('');
+  const [editingHintIdx, setEditingHintIdx] = useState<number | null>(null);
+  const [editingHintDraft, setEditingHintDraft] = useState('');
 
   const [addingReason, setAddingReason] = useState(false);
   const [reasonDraft, setReasonDraft] = useState('');
 
   const [memoDraft, setMemoDraft] = useState(values.memo);
-  const [copiedPrompt, setCopiedPrompt] = useState(false);
 
   // Reset accordion, spoilers and sync local drafts when target changes
   useEffect(() => {
@@ -80,6 +76,8 @@ export function RecordCard({
     setEditingAnswer(false);
     setAddingHint(false);
     setHintDraft('');
+    setEditingHintIdx(null);
+    setEditingHintDraft('');
   }, [recordKey]);
 
   const showMissReasons = values.status === 'review' || values.status === 'weak';
@@ -140,8 +138,43 @@ export function RecordCard({
     setAddingHint(false);
   };
 
+  const handleStartEditHint = (idx: number) => {
+    setAddingHint(false);
+    setEditingHintIdx(idx);
+    setEditingHintDraft(values.hints[idx] ?? '');
+  };
+
+  const handleSaveEditHint = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (editingHintIdx === null) return;
+    const trimmed = editingHintDraft.trim();
+    if (!trimmed) {
+      setEditingHintIdx(null);
+      setEditingHintDraft('');
+      return;
+    }
+    const next = values.hints.map((h, i) => (i === editingHintIdx ? trimmed : h));
+    void onPatch({ hints: next });
+    setEditingHintIdx(null);
+    setEditingHintDraft('');
+  };
+
   const handleDeleteHint = (idx: number) => {
     const next = values.hints.filter((_, i) => i !== idx);
+    setRevealedHints((prev) => {
+      const updated = new Set<number>();
+      for (const i of prev) {
+        if (i < idx) updated.add(i);
+        else if (i > idx) updated.add(i - 1);
+      }
+      return updated;
+    });
+    if (editingHintIdx === idx) {
+      setEditingHintIdx(null);
+      setEditingHintDraft('');
+    } else if (editingHintIdx !== null && editingHintIdx > idx) {
+      setEditingHintIdx(editingHintIdx - 1);
+    }
     void onPatch({ hints: next });
   };
 
@@ -150,32 +183,21 @@ export function RecordCard({
     setEditingAnswer(false);
   };
 
-  const handleCopyPrompt = async () => {
-    const reasonsStr =
-      values.missReasons.length > 0
-        ? `（ミス原因：${values.missReasons.join('・')}）`
-        : '';
-    const promptText = `${workbookTitle} P.${pageNumber}${
-      values.subtitle ? ` ${values.title}` : ''
-    } の解説をお願いします${reasonsStr}`;
-
-    try {
-      await navigator.clipboard.writeText(promptText);
-    } catch {
-      // Fallback ignored if clipboard unavailable
-    }
-    setCopiedPrompt(true);
-    setTimeout(() => setCopiedPrompt(false), 2000);
-  };
-
   return (
     <div className="rounded-xl border border-base-300 bg-base-100 p-3.5 space-y-3">
       {/* Card Header */}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-base-content truncate">
-            {values.title}
-          </h3>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <h3 className="text-sm font-semibold text-base-content truncate">
+              {values.title}
+            </h3>
+            {showPageBadge && (
+              <span className="shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-base-200 text-base-content/55">
+                P.{pageNumber}
+              </span>
+            )}
+          </div>
           {values.subtitle && (
             <p className="text-[11px] text-base-content/55 truncate mt-0.5">
               {values.subtitle}
@@ -341,16 +363,18 @@ export function RecordCard({
               <div className="space-y-1.5">
                 {values.hints.map((hint, idx) => {
                   const revealed = revealedHints.has(idx);
+                  const isEditing = editingHintIdx === idx;
                   return (
                     <div
                       key={idx}
-                      className="group rounded-lg border border-base-300 bg-base-200/50 p-2.5 transition-colors hover:border-base-content/25"
+                      className="rounded-lg border border-base-300 bg-base-200/50 p-2.5 transition-colors hover:border-base-content/25"
                     >
-                      <div className="flex items-center justify-between text-[10px] text-base-content/50 mb-1">
+                      <div className="flex items-center justify-between gap-2 text-[10px] text-base-content/55 mb-1">
                         <button
                           type="button"
                           onClick={() => toggleHintReveal(idx)}
-                          className="flex items-center gap-1 hover:text-base-content"
+                          disabled={isEditing}
+                          className="flex items-center gap-1 hover:text-base-content disabled:opacity-70"
                         >
                           {revealed ? (
                             <EyeOff className="w-3 h-3" />
@@ -358,31 +382,85 @@ export function RecordCard({
                             <Eye className="w-3 h-3" />
                           )}
                           <span>ヒント {idx + 1}</span>
-                          <span className="opacity-75">
-                            （{revealed ? 'タップで隠す' : 'タップで表示'}）
-                          </span>
+                          {!isEditing && (
+                            <span className="opacity-75">
+                              （{revealed ? 'タップで隠す' : 'タップで表示'}）
+                            </span>
+                          )}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteHint(idx)}
-                          className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-base-content/40 hover:text-error transition-opacity"
-                          title="ヒントを削除"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
+                        <div className="flex items-center gap-0.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (isEditing) {
+                                setEditingHintIdx(null);
+                                setEditingHintDraft('');
+                              } else {
+                                handleStartEditHint(idx);
+                              }
+                            }}
+                            className={`p-1 rounded transition-colors ${
+                              isEditing
+                                ? 'text-primary bg-primary/10'
+                                : 'text-base-content/50 hover:text-base-content hover:bg-base-300/60'
+                            }`}
+                            title="ヒントを編集"
+                            aria-label="ヒントを編集"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteHint(idx)}
+                            className="p-1 rounded text-base-content/50 hover:text-error hover:bg-error/10 transition-colors"
+                            title="ヒントを削除"
+                            aria-label="ヒントを削除"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
-                      <div
-                        onClick={() => toggleHintReveal(idx)}
-                        className="cursor-pointer"
-                      >
-                        <p
-                          className={`text-xs leading-relaxed whitespace-pre-wrap spoiler-blur ${
-                            revealed ? 'revealed' : ''
-                          }`}
+
+                      {isEditing ? (
+                        <form onSubmit={handleSaveEditHint} className="space-y-1.5 pt-1">
+                          <textarea
+                            autoFocus
+                            rows={2}
+                            value={editingHintDraft}
+                            onChange={(e) => setEditingHintDraft(e.target.value)}
+                            placeholder="ヒントの内容を入力..."
+                            className="textarea textarea-bordered textarea-xs w-full text-xs leading-relaxed"
+                          />
+                          <div className="flex justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingHintIdx(null);
+                                setEditingHintDraft('');
+                              }}
+                              className="btn btn-ghost btn-xs"
+                            >
+                              キャンセル
+                            </button>
+                            <button type="submit" className="btn btn-primary btn-xs">
+                              保存
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <div
+                          onClick={() => toggleHintReveal(idx)}
+                          className="cursor-pointer"
                         >
-                          {hint}
-                        </p>
-                      </div>
+                          <p
+                            className={`text-xs leading-relaxed whitespace-pre-wrap spoiler-blur ${
+                              revealed ? 'revealed' : ''
+                            }`}
+                          >
+                            {hint}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -417,7 +495,7 @@ export function RecordCard({
               )}
             </div>
 
-            {/* Compact Answer & Gemini Shortcut */}
+            {/* Compact Answer */}
             <div className="space-y-2 pt-2 border-t border-base-300">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-medium text-base-content/55">
@@ -502,38 +580,6 @@ export function RecordCard({
                   答えは未登録です（右上の「編集」またはCSV/JSONから登録）
                 </p>
               )}
-
-              {/* Gemini Chat Helper */}
-              <div className="flex items-center gap-1.5 pt-0.5">
-                <button
-                  type="button"
-                  onClick={() => void handleCopyPrompt()}
-                  className="btn btn-ghost btn-xs flex-1 border border-base-300 justify-center gap-1.5 font-normal"
-                >
-                  {copiedPrompt ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-success" />
-                      <span className="text-success">コピーしました</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5 text-base-content/65" />
-                      <span>Gemini用質問文をコピー</span>
-                    </>
-                  )}
-                </button>
-                {geminiChatUrl && (
-                  <a
-                    href={geminiChatUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn btn-ghost btn-xs border border-base-300 px-2"
-                    title="専用Geminiチャットを開く"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                )}
-              </div>
             </div>
 
             {/* Free Memo */}

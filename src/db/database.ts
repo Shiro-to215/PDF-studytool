@@ -118,7 +118,6 @@ export interface CreateWorkbookInput {
   bindingDirection?: BindingDirection;
   defaultSpread?: SpreadMode;
   coverSinglePage?: boolean;
-  geminiChatUrl?: string;
 }
 
 export async function addWorkbook(input: CreateWorkbookInput): Promise<Workbook> {
@@ -135,7 +134,6 @@ export async function addWorkbook(input: CreateWorkbookInput): Promise<Workbook>
     bindingDirection: input.bindingDirection ?? 'ltr',
     defaultSpread: input.defaultSpread ?? 'double',
     coverSinglePage: input.coverSinglePage ?? false,
-    geminiChatUrl: input.geminiChatUrl?.trim() || undefined,
     layers: ['1周目'],
     customReasons: [],
     lastPage: 1,
@@ -201,7 +199,6 @@ export async function updateWorkbookSettings(
       | 'bindingDirection'
       | 'defaultSpread'
       | 'coverSinglePage'
-      | 'geminiChatUrl'
       | 'lastPage'
       | 'layers'
       | 'customReasons'

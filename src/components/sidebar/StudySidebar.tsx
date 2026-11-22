@@ -72,10 +72,11 @@ export function StudySidebar({
           <button
             type="button"
             onClick={() => setSidebarOpen(false)}
-            className="lg:hidden btn btn-ghost btn-xs btn-square ml-1"
+            className="btn btn-ghost btn-sm btn-square ml-1 text-base-content/65 hover:text-base-content"
             aria-label="サイドバーを閉じる"
+            title="パネルを閉じる"
           >
-            <X className="w-4 h-4" />
+            <X className="w-[18px] h-[18px]" />
           </button>
         </div>
 

@@ -20,7 +20,6 @@ export function WorkbookSettingsModal({
     workbook.defaultSpread,
   );
   const [coverSinglePage, setCoverSinglePage] = useState(workbook.coverSinglePage);
-  const [geminiChatUrl, setGeminiChatUrl] = useState(workbook.geminiChatUrl ?? '');
   const [saving, setSaving] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -32,7 +31,6 @@ export function WorkbookSettingsModal({
         bindingDirection,
         defaultSpread,
         coverSinglePage,
-        geminiChatUrl: geminiChatUrl.trim() || undefined,
       });
       onClose();
     } finally {
@@ -134,19 +132,6 @@ export function WorkbookSettingsModal({
             <span className="text-xs text-base-content/80">
               1ページ目を表紙として単独表示する（2〜3ページ目から見開き）
             </span>
-          </label>
-
-          <label className="block space-y-1">
-            <span className="text-xs font-medium text-base-content/70">
-              専用GeminiチャットURL（任意）
-            </span>
-            <input
-              type="url"
-              value={geminiChatUrl}
-              onChange={(e) => setGeminiChatUrl(e.target.value)}
-              placeholder="https://gemini.google.com/..."
-              className="input input-bordered input-sm w-full"
-            />
           </label>
 
           <div className="pt-2 flex items-center justify-end gap-2">

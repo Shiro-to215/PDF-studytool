@@ -164,6 +164,7 @@ function computeTargetPosition(
   boundsW: number,
   boundsH: number,
   safeBottom: number,
+  avoidTopRight: boolean,
 ): { x: number; y: number } {
   const margin = 14;
   const bottomMargin = 14 + safeBottom;
@@ -173,8 +174,10 @@ function computeTargetPosition(
 
   if (target.kind === 'corner') {
     x = target.corner.endsWith('left') ? margin : boundsW - elW - margin;
-    // Offset top corners below the 54px floating hamburger / panel buttons so they never overlap
-    const topOffset = target.corner.startsWith('top') ? margin + 66 : margin;
+    // Offset top corners below the 54px floating hamburger / panel buttons when those buttons are visible
+    const shouldOffsetTop =
+      target.corner === 'top-left' || (target.corner === 'top-right' && avoidTopRight);
+    const topOffset = shouldOffsetTop ? margin + 66 : margin;
     y = target.corner.startsWith('top') ? topOffset : boundsH - elH - bottomMargin;
   } else {
     switch (target.edge) {
@@ -403,6 +406,7 @@ export function FloatingToolPalette({
     spreadMode,
     bindingDirection,
     coverSinglePage,
+    sidebarOpen,
     scale,
     resetZoom,
   } = useViewerStore();
@@ -618,6 +622,7 @@ export function FloatingToolPalette({
       boundsRect.width,
       boundsRect.height,
       getSafeBottom(),
+      !sidebarOpen,
     );
 
     const origin = flipOriginRef.current;
@@ -832,7 +837,7 @@ export function FloatingToolPalette({
       el.style.opacity = '';
       el.style.transform = `translate3d(${targetX.toFixed(1)}px, ${targetY.toFixed(1)}px, 0)`;
     }
-  }, [paletteState, dragEndNonce, boundsSize, isDraggingMoved, dragState, boundsRef]);
+  }, [paletteState, dragEndNonce, boundsSize, sidebarOpen, isDraggingMoved, dragState, boundsRef]);
 
   const layout = getSpreadLayout(
     currentPage,
@@ -1195,7 +1200,15 @@ export function FloatingToolPalette({
         : p.edge === 'left' || p.edge === 'right'
           ? Math.min(390, boundsSize.h - 32)
           : 66;
-    const pos = computeTargetPosition(p, gw, gh, boundsSize.w, boundsSize.h, getSafeBottom());
+    const pos = computeTargetPosition(
+      p,
+      gw,
+      gh,
+      boundsSize.w,
+      boundsSize.h,
+      getSafeBottom(),
+      !sidebarOpen,
+    );
     return { w: gw, h: gh, x: pos.x, y: pos.y };
   })();
 

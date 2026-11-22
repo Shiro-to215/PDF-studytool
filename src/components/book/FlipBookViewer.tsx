@@ -95,7 +95,6 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       zoomResetSeq,
       setCurrentPage,
       setZoomPan,
-      setSelectedSpreadSide,
     } = useViewerStore();
 
     const {
@@ -961,14 +960,6 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         const pt = resolveBookPoint(clientX, clientY, false);
         if (!pt || pt.pageNumber === null) return false;
 
-        // Sync active sidebar side only if it actually changed
-        if (spreadMode === 'double') {
-          const nextSide = layout.leftPage === pt.pageNumber ? 'left' : 'right';
-          if (useViewerStore.getState().selectedSpreadSide !== nextSide) {
-            setSelectedSpreadSide(nextSide);
-          }
-        }
-
         if (tool === 'eraser') {
           eraserWorkingRef.current = {
             initialByPage: {},
@@ -1002,9 +993,6 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       },
       [
         resolveBookPoint,
-        spreadMode,
-        setSelectedSpreadSide,
-        layout.leftPage,
         tool,
         eraseAtPoint,
         clearHoldTimer,

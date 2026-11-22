@@ -20,7 +20,6 @@ export interface Workbook {
   bindingDirection: BindingDirection;
   defaultSpread: SpreadMode;
   coverSinglePage: boolean;
-  geminiChatUrl?: string;
   layers: string[];
   customReasons: string[];
   lastPage: number;

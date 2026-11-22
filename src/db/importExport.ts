@@ -345,7 +345,6 @@ export async function importBackupJson(jsonText: string): Promise<{
         bindingDirection: bWb.bindingDirection,
         defaultSpread: bWb.defaultSpread,
         coverSinglePage: bWb.coverSinglePage,
-        geminiChatUrl: bWb.geminiChatUrl,
         layers: Array.from(new Set([...target.layers, ...(bWb.layers ?? [])])),
         customReasons: Array.from(new Set([...target.customReasons, ...(bWb.customReasons ?? [])])),
         lastPage: bWb.lastPage,
