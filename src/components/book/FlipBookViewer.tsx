@@ -131,10 +131,10 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       return () => observer.disconnect();
     }, []);
 
-    // Compute exact page dimensions fitting neatly inside the stage
+    // Compute exact page dimensions fitting neatly inside the stage with minimal margins
     const { pageW, pageH, bookW, bookH } = useMemo(() => {
-      const padX = stageSize.width < 640 ? 16 : 48;
-      const padY = stageSize.height < 520 ? 16 : 40;
+      const padX = stageSize.width < 640 ? 12 : 24;
+      const padY = stageSize.height < 520 ? 12 : 20;
       const availW = Math.max(240, stageSize.width - padX);
       const availH = Math.max(240, stageSize.height - padY);
       const safeAspect = Math.max(0.45, Math.min(1.8, aspectRatio || 0.707));

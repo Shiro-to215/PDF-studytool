@@ -153,14 +153,14 @@ export function StudyPage({ workbookId }: StudyPageProps) {
 
   return (
     <div className="fixed inset-0 h-[100dvh] w-[100dvw] flex flex-col overflow-hidden bg-base-200 text-base-content">
-      <TopBar workbook={workbook} />
-
       <div className="flex-1 min-h-0 flex overflow-hidden relative">
-        {/* Book Stage + Floating Pen Palette */}
+        {/* Book Stage + Floating Hamburger Menu + Floating Pen Palette */}
         <div
           ref={stageContainerRef}
           className="relative flex-1 min-h-0 flex flex-col overflow-hidden"
         >
+          <TopBar workbook={workbook} />
+
           {pdfError ? (
             <div className="flex-1 flex items-center justify-center p-6 text-center">
               <div className="rounded-2xl bg-base-100 border border-base-300 p-6 max-w-sm space-y-3">

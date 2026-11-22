@@ -42,7 +42,7 @@ export function StudySidebar({
         className="lg:hidden absolute inset-0 z-30 bg-black/25"
       />
 
-      <aside className="absolute lg:static right-0 top-0 bottom-0 w-[330px] sm:w-[350px] max-w-[90vw] z-40 border-l border-base-300 bg-base-100 flex flex-col shrink-0 shadow-xl lg:shadow-none">
+      <aside className="absolute lg:static right-0 top-0 bottom-0 w-[330px] sm:w-[350px] max-w-[90vw] z-40 border-l border-base-300 bg-base-100 pt-[env(safe-area-inset-top)] flex flex-col shrink-0 shadow-xl lg:shadow-none">
         {/* Tabs header */}
         <div className="flex items-center border-b border-base-300 shrink-0 px-2">
           <div className="flex-1 grid grid-cols-3">
