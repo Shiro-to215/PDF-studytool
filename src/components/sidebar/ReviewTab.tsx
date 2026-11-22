@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import { Play } from 'lucide-react';
 import {
   DEFAULT_MISS_REASONS,
   STUDY_STATUS_META,
@@ -49,7 +48,6 @@ export function ReviewTab({ pageStates, problems, customReasons }: ReviewTabProp
     bindingDirection,
     coverSinglePage,
     setCurrentPage,
-    startReviewQueue,
   } = useViewerStore();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [reasonFilter, setReasonFilter] = useState<string>('all');
@@ -121,11 +119,6 @@ export function ReviewTab({ pageStates, problems, customReasons }: ReviewTabProp
     setCurrentPage(item.pageNumber);
   };
 
-  const handleStartQueue = () => {
-    const pages = filtered.map((i) => i.pageNumber);
-    startReviewQueue(pages);
-  };
-
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Filters */}
@@ -181,17 +174,6 @@ export function ReviewTab({ pageStates, problems, customReasons }: ReviewTabProp
             </button>
           ))}
         </div>
-
-        {filtered.length > 0 && (
-          <button
-            type="button"
-            onClick={handleStartQueue}
-            className="btn btn-primary btn-sm h-10 w-full rounded-xl gap-2 text-sm font-semibold"
-          >
-            <Play className="w-4 h-4" />
-            この {filtered.length} 件を連続復習する
-          </button>
-        )}
       </div>
 
       {/* Review List */}

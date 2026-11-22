@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
-  ArrowRight,
   BookOpen,
   Eye,
   EyeOff,
@@ -33,15 +32,11 @@ export function TopBar({ workbook }: TopBarProps) {
     bindingDirection,
     coverSinglePage,
     sidebarOpen,
-    reviewQueue,
-    reviewQueueIndex,
     closeWorkbook,
     setCurrentPage,
     setSpreadMode,
     setCoverSinglePage,
     toggleSidebar,
-    stepReviewQueue,
-    clearReviewQueue,
   } = useViewerStore();
 
   const {
@@ -366,47 +361,6 @@ export function TopBar({ workbook }: TopBarProps) {
         >
           <PanelRight className="w-6 h-6" />
         </button>
-      )}
-
-      {/* Floating Active Review Queue Pill (only visible while reviewing) */}
-      {reviewQueue.length > 0 && (
-        <div
-          onPointerDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          className="absolute top-[calc(16px+env(safe-area-inset-top))] left-1/2 -translate-x-1/2 z-30 h-10 px-3.5 rounded-full bg-base-100/95 backdrop-blur-md border border-base-300 shadow-md flex items-center gap-2 text-xs select-none"
-        >
-          <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
-          <span className="font-medium hidden sm:inline">連続復習</span>
-          <span className="font-mono text-base-content/75">
-            {reviewQueueIndex + 1}/{reviewQueue.length}（P.{reviewQueue[reviewQueueIndex]}）
-          </span>
-          <div className="flex items-center gap-0.5 ml-1">
-            <button
-              type="button"
-              onClick={() => stepReviewQueue(-1)}
-              className="btn btn-ghost btn-xs btn-circle"
-              title="前へ"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => stepReviewQueue(1)}
-              className="btn btn-ghost btn-xs btn-circle"
-              title="次へ"
-            >
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={clearReviewQueue}
-              className="btn btn-ghost btn-xs btn-circle text-base-content/50"
-              title="連続復習を終了"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
       )}
     </>
   );

@@ -8,7 +8,6 @@ import {
   FolderPlus,
   MoreHorizontal,
   Moon,
-  Play,
   Plus,
   Settings,
   Sparkles,
@@ -168,7 +167,11 @@ export function HomePage() {
     [problems, pageStates],
   );
 
-  const handleOpenBook = (wb: Workbook, page?: number, queue?: number[]) => {
+  const handleOpenBook = (
+    wb: Workbook,
+    page?: number,
+    initialTab?: 'record' | 'toc' | 'review',
+  ) => {
     openWorkbook({
       workbookId: wb.id,
       pageCount: wb.pageCount,
@@ -177,7 +180,7 @@ export function HomePage() {
       bindingDirection: wb.bindingDirection,
       coverSinglePage: wb.coverSinglePage,
       initialPage: page,
-      reviewQueue: queue,
+      initialTab,
     });
   };
 
@@ -562,22 +565,6 @@ export function HomePage() {
                 間違えた問題・要復習まとめ
               </h2>
             </div>
-            {globalReviewRows.length > 0 && (
-              <button
-                type="button"
-                onClick={() => {
-                  const firstBook = globalReviewRows[0].workbook;
-                  const queue = globalReviewRows
-                    .filter((r) => r.workbook.id === firstBook.id)
-                    .map((r) => r.pageNumber);
-                  handleOpenBook(firstBook, queue[0], queue);
-                }}
-                className="btn btn-ghost btn-xs text-primary gap-1"
-              >
-                <Play className="w-3 h-3" />
-                先頭のワークを連続復習
-              </button>
-            )}
           </div>
 
           {globalReviewRows.length === 0 ? (
@@ -590,12 +577,7 @@ export function HomePage() {
                 <button
                   key={row.id}
                   type="button"
-                  onClick={() => {
-                    const queue = globalReviewRows
-                      .filter((r) => r.workbook.id === row.workbook.id)
-                      .map((r) => r.pageNumber);
-                    handleOpenBook(row.workbook, row.pageNumber, queue);
-                  }}
+                  onClick={() => handleOpenBook(row.workbook, row.pageNumber, 'review')}
                   className="w-full py-2.5 px-2 -mx-2 rounded-lg hover:bg-base-200/70 transition-colors flex items-center justify-between gap-3 text-left"
                 >
                   <div className="min-w-0 flex-1 space-y-1">

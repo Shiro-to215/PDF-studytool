@@ -105,8 +105,6 @@ interface ViewerStore {
   sidebarTab: SidebarTab;
   tocUnitId: string | null;
   pageNavSeq: number;
-  reviewQueue: number[];
-  reviewQueueIndex: number;
 
   openWorkbook: (params: {
     workbookId: string;
@@ -116,7 +114,7 @@ interface ViewerStore {
     bindingDirection: BindingDirection;
     coverSinglePage: boolean;
     initialPage?: number;
-    reviewQueue?: number[];
+    initialTab?: SidebarTab;
   }) => void;
   closeWorkbook: () => void;
   setCurrentPage: (page: number, options?: { syncToc?: boolean }) => void;
@@ -129,9 +127,6 @@ interface ViewerStore {
   toggleSidebar: () => void;
   setSidebarTab: (tab: SidebarTab) => void;
   setTocUnitId: (unitId: string | null) => void;
-  startReviewQueue: (pages: number[], startPage?: number) => void;
-  stepReviewQueue: (delta: -1 | 1) => void;
-  clearReviewQueue: () => void;
 }
 
 export const useViewerStore = create<ViewerStore>((set, get) => ({
@@ -149,8 +144,6 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
   sidebarTab: 'record',
   tocUnitId: null,
   pageNavSeq: 0,
-  reviewQueue: [],
-  reviewQueueIndex: 0,
 
   openWorkbook: ({
     workbookId,
@@ -160,11 +153,9 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
     bindingDirection,
     coverSinglePage,
     initialPage,
-    reviewQueue,
+    initialTab,
   }) => {
     const targetPage = Math.max(1, Math.min(pageCount || 1, initialPage ?? lastPage ?? 1));
-    const queue = reviewQueue ?? [];
-    const qIndex = queue.indexOf(targetPage);
 
     set({
       activeWorkbookId: workbookId,
@@ -178,8 +169,7 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
       panY: 0,
       tocUnitId: null,
       pageNavSeq: 0,
-      reviewQueue: queue,
-      reviewQueueIndex: qIndex >= 0 ? qIndex : 0,
+      ...(initialTab ? { sidebarTab: initialTab, sidebarOpen: true } : {}),
     });
   },
 
@@ -188,8 +178,6 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
       activeWorkbookId: null,
       tocUnitId: null,
       pageNavSeq: 0,
-      reviewQueue: [],
-      reviewQueueIndex: 0,
       scale: 1,
       panX: 0,
       panY: 0,
@@ -231,23 +219,4 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarTab: (sidebarTab) => set({ sidebarTab, sidebarOpen: true }),
   setTocUnitId: (tocUnitId) => set({ tocUnitId }),
-
-  startReviewQueue: (pages, startPage) => {
-    const unique = Array.from(new Set(pages)).sort((a, b) => a - b);
-    if (unique.length === 0) return;
-    const target = startPage && unique.includes(startPage) ? startPage : unique[0];
-    const idx = unique.indexOf(target);
-    set({ reviewQueue: unique, reviewQueueIndex: idx >= 0 ? idx : 0 });
-    get().setCurrentPage(target);
-  },
-
-  stepReviewQueue: (delta) => {
-    const { reviewQueue, reviewQueueIndex } = get();
-    if (reviewQueue.length === 0) return;
-    const nextIdx = (reviewQueueIndex + delta + reviewQueue.length) % reviewQueue.length;
-    set({ reviewQueueIndex: nextIdx });
-    get().setCurrentPage(reviewQueue[nextIdx]);
-  },
-
-  clearReviewQueue: () => set({ reviewQueue: [], reviewQueueIndex: 0 }),
 }));

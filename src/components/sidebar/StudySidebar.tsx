@@ -43,9 +43,9 @@ export function StudySidebar({
       />
 
       <aside className="absolute lg:static right-0 top-0 bottom-0 w-[330px] sm:w-[350px] max-w-[90vw] z-40 border-l border-base-300 bg-base-100 pt-[env(safe-area-inset-top)] flex flex-col shrink-0 shadow-xl lg:shadow-none">
-        {/* Tabs header */}
+        {/* Tabs header (text + underline look, slightly larger with flex-expand & sliding underline) */}
         <div className="flex items-center border-b border-base-300 shrink-0 px-2">
-          <div className="flex-1 grid grid-cols-3">
+          <div className="relative flex-1 flex items-stretch min-w-0">
             {TABS.map((t) => {
               const active = sidebarTab === t.id;
               return (
@@ -53,21 +53,32 @@ export function StudySidebar({
                   key={t.id}
                   type="button"
                   onClick={() => setSidebarTab(t.id)}
-                  className={`py-2.5 text-xs font-medium border-b-2 transition-colors flex items-center justify-center gap-1.5 ${
+                  className={`basis-0 min-w-0 py-3 whitespace-nowrap overflow-hidden transition-all duration-300 ease-out flex items-center justify-center gap-1.5 ${
                     active
-                      ? 'border-primary text-base-content'
-                      : 'border-transparent text-base-content/55 hover:text-base-content'
+                      ? 'grow-[1.45] text-[15px] font-semibold text-base-content'
+                      : 'grow text-sm font-medium text-base-content/55 hover:text-base-content'
                   }`}
                 >
                   <span>{t.label}</span>
                   {t.id === 'review' && reviewCount > 0 && (
-                    <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-base-200 text-base-content/75">
+                    <span className="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-base-200 text-base-content/75 leading-none">
                       {reviewCount}
                     </span>
                   )}
                 </button>
               );
             })}
+            {/* Sliding underline synced 1:1 with the 1.45 : 1 : 1 flex expansion */}
+            <span
+              aria-hidden="true"
+              className="absolute bottom-0 h-[2.5px] rounded-full bg-primary pointer-events-none transition-all duration-300 ease-out"
+              style={{
+                width: `${(1.45 / 3.45) * 100}%`,
+                left: `${
+                  (Math.max(0, TABS.findIndex((t) => t.id === sidebarTab)) * (1 / 3.45)) * 100
+                }%`,
+              }}
+            />
           </div>
           <button
             type="button"
