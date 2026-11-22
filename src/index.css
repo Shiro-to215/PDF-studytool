@@ -48,7 +48,7 @@
     --color-warning: #fbbf24;
     --color-error: #f87171;
     --color-palette-prohibited: #f03a5e;
-    --color-palette-prohibited-bg: #323238;
+    --color-palette-prohibited-bg: #d4d4d8;
   }
 
   html, body, #root {

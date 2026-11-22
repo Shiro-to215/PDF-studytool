@@ -203,6 +203,167 @@ function computeTargetPosition(
   };
 }
 
+interface PillPos {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  groupKey: string;
+}
+
+function animateLiquidPill(
+  pillEl: HTMLSpanElement,
+  targetBtn: HTMLButtonElement,
+  groupKey: string,
+  prevRef: { current: PillPos | null },
+  animRef: { current: Animation | null },
+  style: 'spring' | 'smooth' = 'spring',
+) {
+  const nextX = targetBtn.offsetLeft;
+  const nextY = targetBtn.offsetTop;
+  const nextW = targetBtn.offsetWidth;
+  const nextH = targetBtn.offsetHeight;
+
+  const prev = prevRef.current;
+
+  let startX = prev?.x ?? nextX;
+  let startY = prev?.y ?? nextY;
+  if (animRef.current) {
+    try {
+      const m = new DOMMatrixReadOnly(window.getComputedStyle(pillEl).transform);
+      if (Number.isFinite(m.m41) && Number.isFinite(m.m42)) {
+        startX = (prev?.x ?? nextX) + m.m41;
+        startY = (prev?.y ?? nextY) + m.m42;
+      }
+    } catch {
+      // Fall back to previous target coordinates
+    }
+    try {
+      animRef.current.cancel();
+    } catch {
+      // Ignore
+    }
+    animRef.current = null;
+  }
+
+  // Use left/top (no resting translate3d) so WebKit never promotes the z-0 pill
+  // above z-10 button icons during the parent palette's scale() unfold transition.
+  pillEl.style.left = `${nextX}px`;
+  pillEl.style.top = `${nextY}px`;
+  pillEl.style.width = `${nextW}px`;
+  pillEl.style.height = `${nextH}px`;
+  pillEl.style.transform = '';
+
+  prevRef.current = { x: nextX, y: nextY, w: nextW, h: nextH, groupKey };
+
+  if (!prev || prev.groupKey !== groupKey) {
+    return;
+  }
+
+  const dx = nextX - startX;
+  const dy = nextY - startY;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 1) {
+    return;
+  }
+
+  const fromX = -dx;
+  const fromY = -dy;
+  const horiz = Math.abs(dx) >= Math.abs(dy);
+  const multiStep = dist > (horiz ? nextW : nextH) * 1.5;
+
+  try {
+    let keyframes: Keyframe[];
+    let duration: number;
+
+    if (style === 'smooth') {
+      const stretchLong = multiStep ? 1.38 : 1.26;
+      const stretchShort = multiStep ? 0.82 : 0.87;
+      const midX = fromX * 0.48;
+      const midY = fromY * 0.48;
+      const midScale = horiz
+        ? `scale(${stretchLong}, ${stretchShort})`
+        : `scale(${stretchShort}, ${stretchLong})`;
+      duration = 320;
+      keyframes = [
+        {
+          offset: 0,
+          transform: `translate(${fromX.toFixed(1)}px, ${fromY.toFixed(1)}px) scale(1, 1)`,
+          easing: 'cubic-bezier(0.32, 0, 0.24, 1)',
+        },
+        {
+          offset: 0.36,
+          transform: `translate(${midX.toFixed(1)}px, ${midY.toFixed(1)}px) ${midScale}`,
+          easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+        },
+        {
+          offset: 1,
+          transform: 'translate(0px, 0px) scale(1, 1)',
+        },
+      ];
+    } else {
+      const dirX = Math.sign(dx);
+      const dirY = Math.sign(dy);
+      // Longer jumps (e.g. pen <-> eraser across 2 steps) stretch a touch more
+      const stretchLong = multiStep ? 1.28 : 1.2;
+      const stretchShort = multiStep ? 0.87 : 0.9;
+      const overshoot = multiStep ? 3.5 : 2.6;
+      const rebound = multiStep ? -0.8 : -0.6;
+
+      const midX = fromX * 0.44;
+      const midY = fromY * 0.44;
+      const overX = dirX * overshoot;
+      const overY = dirY * overshoot;
+      const rebX = dirX * rebound;
+      const rebY = dirY * rebound;
+
+      const midScale = horiz
+        ? `scale(${stretchLong}, ${stretchShort})`
+        : `scale(${stretchShort}, ${stretchLong})`;
+      const landScale = horiz ? 'scale(0.94, 1.05)' : 'scale(1.05, 0.94)';
+      const rebScale = horiz ? 'scale(1.015, 0.988)' : 'scale(0.988, 1.015)';
+      duration = 340;
+      keyframes = [
+        {
+          offset: 0,
+          transform: `translate(${fromX.toFixed(1)}px, ${fromY.toFixed(1)}px) scale(1, 1)`,
+          easing: 'cubic-bezier(0.32, 0, 0.24, 1)',
+        },
+        {
+          offset: 0.35,
+          transform: `translate(${midX.toFixed(1)}px, ${midY.toFixed(1)}px) ${midScale}`,
+          easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+        },
+        {
+          offset: 0.72,
+          transform: `translate(${overX.toFixed(1)}px, ${overY.toFixed(1)}px) ${landScale}`,
+          easing: 'cubic-bezier(0.34, 1, 0.64, 1)',
+        },
+        {
+          offset: 0.88,
+          transform: `translate(${rebX.toFixed(1)}px, ${rebY.toFixed(1)}px) ${rebScale}`,
+          easing: 'ease-out',
+        },
+        {
+          offset: 1,
+          transform: 'translate(0px, 0px) scale(1, 1)',
+        },
+      ];
+    }
+
+    const anim = pillEl.animate(keyframes, { duration, fill: 'none' });
+    animRef.current = anim;
+    anim.onfinish = () => {
+      if (animRef.current === anim) animRef.current = null;
+    };
+    anim.oncancel = () => {
+      if (animRef.current === anim) animRef.current = null;
+    };
+  } catch {
+    // Fallback: already positioned at target left/top
+  }
+}
+
 interface FloatingToolPaletteProps {
   workbookId: string;
   boundsRef: RefObject<HTMLElement | null>;
@@ -258,8 +419,21 @@ export function FloatingToolPalette({
 
   const paletteElRef = useRef<HTMLDivElement | null>(null);
   const contentElRef = useRef<HTMLDivElement | null>(null);
+  const flipBtnRef = useRef<HTMLButtonElement | null>(null);
+  const drawBtnRef = useRef<HTMLButtonElement | null>(null);
+  const modePillRef = useRef<HTMLSpanElement | null>(null);
+  const modePillPrevRef = useRef<PillPos | null>(null);
+  const modePillAnimRef = useRef<Animation | null>(null);
   const penBtnRef = useRef<HTMLButtonElement | null>(null);
   const markerBtnRef = useRef<HTMLButtonElement | null>(null);
+  const eraserBtnRef = useRef<HTMLButtonElement | null>(null);
+  const toolPillRef = useRef<HTMLSpanElement | null>(null);
+  const toolPillPrevRef = useRef<PillPos | null>(null);
+  const toolPillAnimRef = useRef<Animation | null>(null);
+  const sizeBtnRefs = useRef<Array<HTMLButtonElement | null>>([null, null, null]);
+  const sizePillRef = useRef<HTMLSpanElement | null>(null);
+  const sizePillPrevRef = useRef<PillPos | null>(null);
+  const sizePillAnimRef = useRef<Animation | null>(null);
   const colorBtnRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const safeBottomRef = useRef<HTMLDivElement | null>(null);
@@ -312,6 +486,13 @@ export function FloatingToolPalette({
         }
       }
       activeAnimsRef.current = [];
+      try {
+        modePillAnimRef.current?.cancel();
+        toolPillAnimRef.current?.cancel();
+        sizePillAnimRef.current?.cancel();
+      } catch {
+        // Ignore
+      }
     };
   }, []);
 
@@ -373,6 +554,36 @@ export function FloatingToolPalette({
     safeBottomRef.current?.getBoundingClientRect().height ?? 0;
 
   const isDraggingMoved = Boolean(dragState?.moved);
+  const isVertical = paletteState.dock === 'left' || paletteState.dock === 'right';
+
+  // Position sliding pills BEFORE the palette unfold/morph layout effect flushes layout,
+  // so the active blue pill is already painted on the very first frame of expansion.
+  useLayoutEffect(() => {
+    if (paletteState.collapsed) {
+      modePillPrevRef.current = null;
+      return;
+    }
+    const pillEl = modePillRef.current;
+    const targetBtn = interactionMode === 'flip' ? flipBtnRef.current : drawBtnRef.current;
+    if (!pillEl || !targetBtn) return;
+    animateLiquidPill(pillEl, targetBtn, isVertical ? 'v' : 'h', modePillPrevRef, modePillAnimRef, 'spring');
+  }, [interactionMode, isVertical, paletteState.collapsed]);
+
+  useLayoutEffect(() => {
+    if (paletteState.collapsed) {
+      toolPillPrevRef.current = null;
+      return;
+    }
+    const pillEl = toolPillRef.current;
+    const targetBtn =
+      tool === 'marker'
+        ? markerBtnRef.current
+        : tool === 'eraser'
+          ? eraserBtnRef.current
+          : penBtnRef.current;
+    if (!pillEl || !targetBtn) return;
+    animateLiquidPill(pillEl, targetBtn, isVertical ? 'v' : 'h', toolPillPrevRef, toolPillAnimRef, 'spring');
+  }, [tool, isVertical, paletteState.collapsed]);
 
   // Unified pixel positioning + smooth glide/unfold/liquid-morph animation on release/toggle
   useLayoutEffect(() => {
@@ -858,10 +1069,23 @@ export function FloatingToolPalette({
     }));
   };
 
-  const isVertical = paletteState.dock === 'left' || paletteState.dock === 'right';
   const expandDock = getExpandDockForCorner(paletteState.corner, paletteState.dock);
   // Rotate collapsed icon + color bar 90° toward screen center when expanding vertically (left/right)
   const collapsedIconDeg = expandDock === 'left' ? -90 : expandDock === 'right' ? 90 : 0;
+
+  // Smooth (non-bouncing) sliding indicator for stroke width popover
+  const activeSizeTool = activePopover?.kind === 'size' ? activePopover.tool : null;
+  const activeSizeIdx = activeSizeTool === 'marker' ? markerSizeIndex : penSizeIndex;
+  useLayoutEffect(() => {
+    if (!activeSizeTool || paletteState.collapsed) {
+      sizePillPrevRef.current = null;
+      return;
+    }
+    const pillEl = sizePillRef.current;
+    const targetBtn = sizeBtnRefs.current[activeSizeIdx];
+    if (!pillEl || !targetBtn) return;
+    animateLiquidPill(pillEl, targetBtn, activeSizeTool, sizePillPrevRef, sizePillAnimRef, 'smooth');
+  }, [activeSizeTool, activeSizeIdx, paletteState.collapsed]);
 
   const zoomResetLeftOffset =
     paletteState.collapsed && paletteState.corner === 'bottom-left'
@@ -1078,39 +1302,48 @@ export function FloatingToolPalette({
 
           {/* Interaction Mode: Flip vs Draw (icon-only for compact horizontal fit) */}
           <div
-            className={`flex p-1 rounded-full bg-base-200 border border-base-300 shrink-0 ${
+            className={`relative isolate flex p-1 rounded-full bg-base-200 border border-base-300 shrink-0 ${
               isVertical ? 'flex-col gap-1' : 'flex-row items-center gap-1'
             }`}
           >
+            <span
+              ref={modePillRef}
+              aria-hidden="true"
+              className={`absolute top-0 left-0 z-0 rounded-full bg-primary shadow-xs pointer-events-none ${
+                isVertical ? 'w-12 h-11' : 'w-11 h-11'
+              }`}
+            />
             <button
+              ref={flipBtnRef}
               type="button"
               onClick={() => {
                 setInteractionMode('flip');
                 setActivePopover(null);
               }}
               title="めくり（Apple Pencilは常に書き込み可）"
-              className={`rounded-full flex items-center justify-center transition-colors ${
+              className={`relative z-10 rounded-full flex items-center justify-center transition-colors duration-200 ${
                 isVertical ? 'w-12 h-11' : 'w-11 h-11'
               } ${
                 interactionMode === 'flip'
-                  ? 'bg-base-100 text-base-content shadow-xs'
+                  ? 'text-primary-content'
                   : 'text-base-content/55 hover:text-base-content'
               }`}
             >
               <BookOpen className="w-5 h-5" />
             </button>
             <button
+              ref={drawBtnRef}
               type="button"
               onClick={() => {
                 setInteractionMode('draw');
                 setActivePopover(null);
               }}
               title="書く（指/マウスでも直接書き込み）"
-              className={`rounded-full flex items-center justify-center transition-colors ${
+              className={`relative z-10 rounded-full flex items-center justify-center transition-colors duration-200 ${
                 isVertical ? 'w-12 h-11' : 'w-11 h-11'
               } ${
                 interactionMode === 'draw'
-                  ? 'bg-primary text-primary-content shadow-xs'
+                  ? 'text-primary-content'
                   : 'text-base-content/55 hover:text-base-content'
               }`}
             >
@@ -1126,18 +1359,23 @@ export function FloatingToolPalette({
 
           {/* Drawing Tools (2nd tap on pen/marker opens thickness speech-bubble popover) */}
           <div
-            className={`flex items-center gap-2 shrink-0 ${
+            className={`relative isolate flex items-center gap-2 shrink-0 ${
               isVertical ? 'flex-col' : 'flex-row'
             }`}
           >
+            <span
+              ref={toolPillRef}
+              aria-hidden="true"
+              className="absolute top-0 left-0 z-0 w-11 h-11 rounded-full bg-primary shadow-xs pointer-events-none"
+            />
             <button
               ref={penBtnRef}
               type="button"
               onClick={() => handleToolButtonClick('pen', penBtnRef.current)}
-              className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${
+              className={`relative z-10 w-11 h-11 rounded-full flex items-center justify-center transition-colors duration-200 ${
                 tool === 'pen'
-                  ? 'bg-primary text-primary-content shadow-xs'
-                  : 'hover:bg-base-200 text-base-content/75'
+                  ? 'text-primary-content'
+                  : 'hover:bg-base-200/70 text-base-content/75'
               }`}
               title="ペン（もう一度タップで太さ調整）"
             >
@@ -1147,22 +1385,23 @@ export function FloatingToolPalette({
               ref={markerBtnRef}
               type="button"
               onClick={() => handleToolButtonClick('marker', markerBtnRef.current)}
-              className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${
+              className={`relative z-10 w-11 h-11 rounded-full flex items-center justify-center transition-colors duration-200 ${
                 tool === 'marker'
-                  ? 'bg-primary text-primary-content shadow-xs'
-                  : 'hover:bg-base-200 text-base-content/75'
+                  ? 'text-primary-content'
+                  : 'hover:bg-base-200/70 text-base-content/75'
               }`}
               title="蛍光マーカー（もう一度タップで太さ調整）"
             >
               <Highlighter className="w-[22px] h-[22px]" />
             </button>
             <button
+              ref={eraserBtnRef}
               type="button"
               onClick={() => handleToolButtonClick('eraser', null)}
-              className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${
+              className={`relative z-10 w-11 h-11 rounded-full flex items-center justify-center transition-colors duration-200 ${
                 tool === 'eraser'
-                  ? 'bg-primary text-primary-content shadow-xs'
-                  : 'hover:bg-base-200 text-base-content/75'
+                  ? 'text-primary-content'
+                  : 'hover:bg-base-200/70 text-base-content/75'
               }`}
               title="消しゴム（ストローク単位）"
             >
@@ -1310,8 +1549,14 @@ export function FloatingToolPalette({
               }`}
             />
 
-            {activePopover.kind === 'size'
-              ? SIZE_OPTIONS.map((opt, idx) => {
+            {activePopover.kind === 'size' ? (
+              <div className="relative isolate flex items-center gap-1.5">
+                <span
+                  ref={sizePillRef}
+                  aria-hidden="true"
+                  className="absolute top-0 left-0 z-0 w-11 h-11 rounded-full bg-primary/12 ring-2 ring-primary pointer-events-none"
+                />
+                {SIZE_OPTIONS.map((opt, idx) => {
                   const dotPx = idx === 0 ? 7 : idx === 1 ? 13 : 19;
                   const currentSizeIdx =
                     activePopover.tool === 'marker' ? markerSizeIndex : penSizeIndex;
@@ -1319,6 +1564,9 @@ export function FloatingToolPalette({
                   return (
                     <button
                       key={opt.label}
+                      ref={(el) => {
+                        sizeBtnRefs.current[idx] = el;
+                      }}
                       type="button"
                       title={`太さ：${opt.label}`}
                       onClick={() => {
@@ -1328,22 +1576,21 @@ export function FloatingToolPalette({
                           setPenSizeIndex(idx as 0 | 1 | 2);
                         }
                       }}
-                      className={`relative z-10 w-11 h-11 rounded-full flex items-center justify-center transition-all duration-150 ${
-                        active
-                          ? 'bg-primary/12 ring-2 ring-primary'
-                          : 'hover:bg-base-200'
+                      className={`relative z-10 w-11 h-11 rounded-full flex items-center justify-center transition-colors duration-200 ${
+                        active ? '' : 'hover:bg-base-200/70'
                       }`}
                     >
                       <span
-                        className={`rounded-full block transition-colors ${
-                          active ? 'bg-primary animate-dot-pop' : 'bg-base-content/80'
+                        className={`rounded-full block transition-colors duration-200 ${
+                          active ? 'bg-primary' : 'bg-base-content/80'
                         }`}
                         style={{ width: dotPx, height: dotPx }}
                       />
                     </button>
                   );
-                })
-              : (activePopover.tool === 'marker' ? MARKER_COLOR_OPTIONS : PEN_COLOR_OPTIONS).map(
+                })}
+              </div>
+            ) : (activePopover.tool === 'marker' ? MARKER_COLOR_OPTIONS : PEN_COLOR_OPTIONS).map(
                   (c) => {
                     const currentColor =
                       activePopover.tool === 'marker' ? markerColor : penColor;
