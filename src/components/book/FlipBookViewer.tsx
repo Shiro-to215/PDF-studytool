@@ -1370,9 +1370,12 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
             )}
             {/* === DOUBLE SPREAD MODE === */}
             {spreadMode === 'double' && (
-              <div className={`relative w-full h-full flex ${isFlipping ? 'preserve-3d' : ''}`}>
+              <div className={`relative w-full h-full ${isFlipping ? 'preserve-3d' : ''}`}>
                 {/* Left static page */}
-                <div className="relative rounded-l-lg overflow-hidden border-r border-black/10" style={{ width: scaledPageW, height: scaledPageH }}>
+                <div
+                  className="absolute top-0 left-0 z-0 rounded-l-lg overflow-hidden"
+                  style={{ width: scaledPageW, height: scaledPageH }}
+                >
                   <PageSurface
                     pageNumber={
                       flipSession?.mode === 'double'
@@ -1404,7 +1407,10 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                 </div>
 
                 {/* Right static page */}
-                <div className="relative rounded-r-lg overflow-hidden" style={{ width: scaledPageW, height: scaledPageH }}>
+                <div
+                  className="absolute top-0 z-[1] rounded-r-lg overflow-hidden"
+                  style={{ left: scaledPageW, width: scaledPageW, height: scaledPageH }}
+                >
                   <PageSurface
                     pageNumber={
                       flipSession?.mode === 'double'
