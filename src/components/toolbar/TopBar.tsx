@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
   BookOpen,
@@ -9,6 +9,7 @@ import {
   Layers,
   Menu,
   Moon,
+  Pencil,
   Plus,
   Sun,
 } from 'lucide-react';
@@ -49,14 +50,61 @@ export function TopBar({ workbook, onOpenImport }: TopBarProps) {
   } = useToolStore();
 
   const [menuOpen, setMenuOpen] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState(workbook.title);
+  const [titleEdges, setTitleEdges] = useState<{ left: boolean; right: boolean }>({
+    left: false,
+    right: false,
+  });
   const [editingPage, setEditingPage] = useState(false);
   const [pageInput, setPageInput] = useState(String(currentPage));
   const [newLayerName, setNewLayerName] = useState('');
   const drawerRef = useRef<HTMLElement | null>(null);
+  const titleScrollRef = useRef<HTMLDivElement | null>(null);
+  const titleDidScrollRef = useRef(false);
 
   useEffect(() => {
     setPageInput(String(currentPage));
   }, [currentPage]);
+
+  useEffect(() => {
+    if (!editingTitle) {
+      setTitleInput(workbook.title);
+    }
+  }, [workbook.title, editingTitle]);
+
+  const updateTitleEdges = useCallback(() => {
+    const el = titleScrollRef.current;
+    if (!el) {
+      setTitleEdges((prev) => (prev.left || prev.right ? { left: false, right: false } : prev));
+      return;
+    }
+    const hasOverflow = el.scrollWidth > el.clientWidth + 2;
+    const left = hasOverflow && el.scrollLeft > 2;
+    const right = hasOverflow && el.scrollLeft + el.clientWidth < el.scrollWidth - 2;
+    setTitleEdges((prev) => (prev.left === left && prev.right === right ? prev : { left, right }));
+  }, []);
+
+  useLayoutEffect(() => {
+    if (editingTitle) return;
+    const el = titleScrollRef.current;
+    if (!el) return;
+    updateTitleEdges();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => updateTitleEdges());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [workbook.title, editingTitle, menuOpen, updateTitleEdges]);
+
+  const commitTitleRename = () => {
+    const trimmed = titleInput.trim();
+    if (trimmed && trimmed !== workbook.title) {
+      void updateWorkbookSettings(workbook.id, { title: trimmed });
+    } else {
+      setTitleInput(workbook.title);
+    }
+    setEditingTitle(false);
+  };
 
   // Smoothly slide-close when tapping/writing outside WITHOUT blocking Apple Pencil or taps
   useEffect(() => {
@@ -67,9 +115,15 @@ export function TopBar({ workbook, onOpenImport }: TopBarProps) {
       if (drawerRef.current?.contains(target)) return;
       setMenuOpen(false);
       setEditingPage(false);
+      setEditingTitle(false);
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (editingTitle) {
+          setTitleInput(workbook.title);
+          setEditingTitle(false);
+          return;
+        }
         setMenuOpen(false);
         setEditingPage(false);
       }
@@ -82,7 +136,7 @@ export function TopBar({ workbook, onOpenImport }: TopBarProps) {
       window.removeEventListener('touchstart', handleOutside, true);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [menuOpen]);
+  }, [menuOpen, editingTitle, workbook.title]);
 
   const layout = getSpreadLayout(
     currentPage,
@@ -186,21 +240,106 @@ export function TopBar({ workbook, onOpenImport }: TopBarProps) {
           menuOpen ? 'shadow-[12px_0_32px_rgba(15,23,42,0.14)]' : 'shadow-none'
         }`}
       >
-        {/* Fixed Header: Back to Bookshelf + Workbook Title */}
+        {/* Fixed Header: Pill Back Button (matching TOC Back) + Tappable Scrollable Workbook Title */}
         <div className="px-4 py-3.5 border-b border-base-300 flex items-center gap-2.5 shrink-0">
           <button
             type="button"
             onClick={closeWorkbook}
-            className="btn btn-ghost btn-sm h-9 px-2.5 gap-1.5 text-base-content/75 hover:text-base-content shrink-0"
+            className="h-10 px-3.5 rounded-full bg-base-200 hover:bg-base-300/80 border border-base-300 flex items-center gap-1.5 text-sm font-medium text-base-content/85 transition-colors active:scale-95 shrink-0"
             title="本棚へ戻る"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span className="text-sm">本棚</span>
+            <span>本棚</span>
           </button>
-          <div className="h-4 w-px bg-base-300 shrink-0" />
-          <h1 className="text-sm font-semibold truncate text-base-content/90">
-            {workbook.title}
-          </h1>
+
+          {editingTitle ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                commitTitleRename();
+              }}
+              className="flex-1 min-w-0"
+            >
+              <input
+                type="text"
+                autoFocus
+                value={titleInput}
+                onChange={(e) => setTitleInput(e.target.value)}
+                onBlur={commitTitleRename}
+                aria-label="ワーク名を変更"
+                className="w-full h-10 px-2.5 rounded-xl border border-primary bg-base-100 text-xl font-bold text-base-content focus:outline-none"
+              />
+            </form>
+          ) : (
+            (() => {
+              let titleMask: string | undefined;
+              if (titleEdges.left && titleEdges.right) {
+                titleMask =
+                  'linear-gradient(to right, transparent 0, black 18px, black calc(100% - 18px), transparent 100%)';
+              } else if (titleEdges.right) {
+                titleMask =
+                  'linear-gradient(to right, black 0, black calc(100% - 22px), transparent 100%)';
+              } else if (titleEdges.left) {
+                titleMask =
+                  'linear-gradient(to right, transparent 0, black 22px, black 100%)';
+              }
+              return (
+                <div className="flex-1 min-w-0 flex items-center">
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    title="タップして名前を変更"
+                    onPointerDown={() => {
+                      titleDidScrollRef.current = false;
+                    }}
+                    onClick={() => {
+                      if (titleDidScrollRef.current) {
+                        titleDidScrollRef.current = false;
+                        return;
+                      }
+                      setTitleInput(workbook.title);
+                      setEditingTitle(true);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setTitleInput(workbook.title);
+                        setEditingTitle(true);
+                      }
+                    }}
+                    className="max-w-full inline-flex items-center gap-1.5 rounded-xl px-2 py-1.5 hover:bg-base-200/70 transition-colors cursor-pointer"
+                  >
+                    <div
+                      ref={titleScrollRef}
+                      onScroll={() => {
+                        titleDidScrollRef.current = true;
+                        updateTitleEdges();
+                      }}
+                      style={
+                        titleMask
+                          ? { maskImage: titleMask, WebkitMaskImage: titleMask }
+                          : undefined
+                      }
+                      className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden math-scroll whitespace-nowrap"
+                    >
+                      <span
+                        className={`inline-block text-xl font-bold text-base-content leading-tight ${
+                          titleEdges.left || titleEdges.right ? 'pr-2' : ''
+                        }`}
+                      >
+                        {workbook.title}
+                      </span>
+                    </div>
+                    <Pencil
+                      className="w-4 h-4 shrink-0 text-[#9ca3af] dark:text-base-content/40"
+                      strokeWidth={1.8}
+                      aria-hidden="true"
+                    />
+                  </div>
+                </div>
+              );
+            })()
+          )}
         </div>
 
         {/* Scrollable Drawer Body */}
