@@ -74,6 +74,7 @@ export function RecordTab({
                 missReasons: prob.missReasons,
                 hints: prob.hints,
                 compactAnswer: prob.compactAnswer,
+                answerEntries: prob.answerEntries,
                 memo: prob.memo,
               }}
               customReasons={workbook.customReasons}
@@ -98,6 +99,7 @@ export function RecordTab({
               missReasons: pageState?.missReasons ?? [],
               hints: pageState?.hints ?? [],
               compactAnswer: pageState?.compactAnswer ?? '',
+              answerEntries: pageState?.answerEntries,
               memo: pageState?.memo ?? '',
             }}
             customReasons={workbook.customReasons}

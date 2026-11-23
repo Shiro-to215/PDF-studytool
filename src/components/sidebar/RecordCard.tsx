@@ -1,6 +1,7 @@
 import {
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type TextareaHTMLAttributes,
@@ -13,12 +14,21 @@ import {
   Pencil,
   Plus,
   Trash2,
+  X,
 } from 'lucide-react';
 import {
   DEFAULT_MISS_REASONS,
   STUDY_STATUS_META,
+  type AnswerEntry,
   type StudyStatus,
 } from '../../types/models';
+import {
+  hasSubQuestions,
+  normalizeAnswerEntries,
+  resolveAnswerEntries,
+  summarizeAnswerEntries,
+} from '../../utils/answerFormat';
+import { MathText } from '../common/MathText';
 
 export interface RecordCardValues {
   title: string;
@@ -26,6 +36,7 @@ export interface RecordCardValues {
   missReasons: string[];
   hints: string[];
   compactAnswer: string;
+  answerEntries?: AnswerEntry[];
   memo: string;
 }
 
@@ -38,6 +49,7 @@ interface RecordCardProps {
     missReasons?: string[];
     hints?: string[];
     compactAnswer?: string;
+    answerEntries?: AnswerEntry[];
     memo?: string;
   }) => Promise<void> | void;
   onAddCustomReason: (reason: string) => Promise<void> | void;
@@ -51,6 +63,12 @@ const ACTIVE_STATUS_BUTTON_CLASS: Record<StudyStatus, string> = {
   weak: 'bg-rose-500/18 text-rose-800 dark:text-rose-200 border-rose-500/45',
   done: 'bg-emerald-500/18 text-emerald-800 dark:text-emerald-200 border-emerald-500/45',
 };
+
+const ACCORDION_OPEN_MS = 360;
+const ACCORDION_CLOSE_MS = 240;
+const ACCORDION_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
+const ACCORDION_STAGGER_STEP_MS = 28;
+const ACCORDION_STAGGER_MAX_DELAY_MS = 140;
 
 /** 1-row slim textarea that grows smoothly with content */
 function AutoGrowTextarea({
@@ -78,6 +96,13 @@ function AutoGrowTextarea({
   );
 }
 
+function cloneAnswerEntries(entries: AnswerEntry[]): AnswerEntry[] {
+  return entries.map((e) => ({
+    ...(e.label ? { label: e.label } : {}),
+    items: e.items.map((item) => ({ text: item.text, latex: item.latex })),
+  }));
+}
+
 export function RecordCard({
   recordKey,
   values,
@@ -86,10 +111,12 @@ export function RecordCard({
   onAddCustomReason,
 }: RecordCardProps) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [renderBody, setRenderBody] = useState(false);
+
   const [revealedHints, setRevealedHints] = useState<Set<number>>(new Set());
-  const [answerRevealed, setAnswerRevealed] = useState(false);
+  const [revealedAnswers, setRevealedAnswers] = useState<Set<number>>(new Set());
   const [editingAnswer, setEditingAnswer] = useState(false);
-  const [answerDraft, setAnswerDraft] = useState(values.compactAnswer);
+  const [answerDraftEntries, setAnswerDraftEntries] = useState<AnswerEntry[]>([]);
 
   const [addingHint, setAddingHint] = useState(false);
   const [hintDraft, setHintDraft] = useState('');
@@ -101,11 +128,38 @@ export function RecordCard({
 
   const [memoDraft, setMemoDraft] = useState(values.memo);
 
+  const accordionRef = useRef<HTMLDivElement | null>(null);
+  const runningAnimsRef = useRef<Animation[]>([]);
+  const closeTimerRef = useRef<number | null>(null);
+
+  const resolvedAnswers = useMemo(
+    () => resolveAnswerEntries(values.compactAnswer, values.answerEntries),
+    [values.compactAnswer, values.answerEntries],
+  );
+  const isSubQuestionMode = useMemo(() => hasSubQuestions(resolvedAnswers), [resolvedAnswers]);
+
+  const cancelAccordionMotion = () => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    for (const anim of runningAnimsRef.current) {
+      try {
+        anim.cancel();
+      } catch {
+        // ignore
+      }
+    }
+    runningAnimsRef.current = [];
+  };
+
   // Reset accordion, spoilers and sync local drafts when target changes
   useEffect(() => {
+    cancelAccordionMotion();
     setDetailsOpen(false);
+    setRenderBody(false);
     setRevealedHints(new Set());
-    setAnswerRevealed(false);
+    setRevealedAnswers(new Set());
     setEditingAnswer(false);
     setAddingHint(false);
     setHintDraft('');
@@ -113,15 +167,121 @@ export function RecordCard({
     setEditingHintDraft('');
   }, [recordKey]);
 
-  const showMissReasons = values.status === 'review' || values.status === 'weak';
-
   useEffect(() => {
-    setAnswerDraft(values.compactAnswer);
-  }, [values.compactAnswer, recordKey]);
+    return () => cancelAccordionMotion();
+  }, []);
 
   useEffect(() => {
     setMemoDraft(values.memo);
   }, [values.memo, recordKey]);
+
+  // Smooth grid-height expand/collapse + 360ms vertical staggered fade-in
+  useLayoutEffect(() => {
+    if (!renderBody) return;
+    const accEl = accordionRef.current;
+    if (!accEl) return;
+
+    cancelAccordionMotion();
+
+    const prefersReduced =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+    if (detailsOpen) {
+      if (prefersReduced) {
+        accEl.setAttribute('data-open', 'true');
+        return;
+      }
+
+      // Ensure transition always starts cleanly from 0fr on the same frame
+      accEl.setAttribute('data-open', 'false');
+      void accEl.offsetHeight;
+      accEl.setAttribute('data-open', 'true');
+
+      const sections = accEl.querySelectorAll<HTMLElement>('[data-record-section]');
+      const started: Animation[] = [];
+      for (let i = 0; i < sections.length; i++) {
+        const sec = sections[i];
+        if (typeof sec.animate !== 'function') continue;
+        started.push(
+          sec.animate(
+            [
+              { transform: 'translateY(-10px)', opacity: 0 },
+              { transform: 'translateY(0px)', opacity: 1 },
+            ],
+            {
+              duration: ACCORDION_OPEN_MS,
+              delay: Math.min(i * ACCORDION_STAGGER_STEP_MS, ACCORDION_STAGGER_MAX_DELAY_MS),
+              easing: ACCORDION_EASING,
+              fill: 'both',
+            },
+          ),
+        );
+      }
+      runningAnimsRef.current = started;
+
+      let cancelled = false;
+      void Promise.all(started.map((a) => a.finished.catch(() => {}))).then(() => {
+        if (cancelled) return;
+        for (const a of started) {
+          try {
+            a.cancel();
+          } catch {
+            // ignore
+          }
+        }
+        if (runningAnimsRef.current === started) {
+          runningAnimsRef.current = [];
+        }
+      });
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    // Closing: collapse height & fade inner surface gently, then unmount
+    if (prefersReduced) {
+      accEl.setAttribute('data-open', 'false');
+      setRenderBody(false);
+      return;
+    }
+
+    accEl.setAttribute('data-open', 'false');
+    const contentEl = accEl.querySelector<HTMLElement>('[data-record-body]');
+    if (contentEl && typeof contentEl.animate === 'function') {
+      const fadeAnim = contentEl.animate(
+        [{ opacity: 1 }, { opacity: 0 }],
+        {
+          duration: 180,
+          easing: ACCORDION_EASING,
+          fill: 'forwards',
+        },
+      );
+      runningAnimsRef.current = [fadeAnim];
+    }
+
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null;
+      runningAnimsRef.current = [];
+      setRenderBody(false);
+    }, ACCORDION_CLOSE_MS + 16);
+  }, [detailsOpen, renderBody]);
+
+  const handleToggleOpen = () => {
+    if (detailsOpen) {
+      setDetailsOpen(false);
+    } else {
+      if (closeTimerRef.current !== null) {
+        window.clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = null;
+      }
+      setRenderBody(true);
+      setDetailsOpen(true);
+    }
+  };
+
+  const showMissReasons = values.status === 'review' || values.status === 'weak';
 
   const allReasons = Array.from(
     new Set([...DEFAULT_MISS_REASONS, ...customReasons, ...values.missReasons]),
@@ -211,23 +371,157 @@ export function RecordCard({
     void onPatch({ hints: next });
   };
 
+  // Answer reveal controls (per-sub-question + toggle all)
+  const allAnswersRevealed =
+    resolvedAnswers.length > 0 &&
+    resolvedAnswers.every((_, idx) => revealedAnswers.has(idx));
+
+  const toggleAnswerReveal = (idx: number) => {
+    setRevealedAnswers((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  };
+
+  const toggleAllAnswersReveal = () => {
+    if (allAnswersRevealed) {
+      setRevealedAnswers(new Set());
+    } else {
+      setRevealedAnswers(new Set(resolvedAnswers.map((_, idx) => idx)));
+    }
+  };
+
+  // Structured Answer Editor actions
+  const handleToggleEditAnswer = () => {
+    if (editingAnswer) {
+      setEditingAnswer(false);
+      return;
+    }
+    if (resolvedAnswers.length > 0) {
+      setAnswerDraftEntries(cloneAnswerEntries(resolvedAnswers));
+    } else {
+      setAnswerDraftEntries([{ items: [{ text: '', latex: false }] }]);
+    }
+    setEditingAnswer(true);
+  };
+
+  const updateDraftEntryLabel = (entryIdx: number, label: string) => {
+    setAnswerDraftEntries((prev) =>
+      prev.map((entry, i) => (i === entryIdx ? { ...entry, label } : entry)),
+    );
+  };
+
+  const updateDraftItemText = (entryIdx: number, itemIdx: number, text: string) => {
+    setAnswerDraftEntries((prev) =>
+      prev.map((entry, i) =>
+        i === entryIdx
+          ? {
+              ...entry,
+              items: entry.items.map((item, j) =>
+                j === itemIdx ? { ...item, text } : item,
+              ),
+            }
+          : entry,
+      ),
+    );
+  };
+
+  const toggleDraftItemLatex = (entryIdx: number, itemIdx: number) => {
+    setAnswerDraftEntries((prev) =>
+      prev.map((entry, i) =>
+        i === entryIdx
+          ? {
+              ...entry,
+              items: entry.items.map((item, j) =>
+                j === itemIdx ? { ...item, latex: !item.latex } : item,
+              ),
+            }
+          : entry,
+      ),
+    );
+  };
+
+  const addDraftItemToEntry = (entryIdx: number) => {
+    setAnswerDraftEntries((prev) =>
+      prev.map((entry, i) => {
+        if (i !== entryIdx) return entry;
+        const lastLatex = entry.items[entry.items.length - 1]?.latex ?? false;
+        return {
+          ...entry,
+          items: [...entry.items, { text: '', latex: lastLatex }],
+        };
+      }),
+    );
+  };
+
+  const removeDraftItemFromEntry = (entryIdx: number, itemIdx: number) => {
+    setAnswerDraftEntries((prev) =>
+      prev.map((entry, i) => {
+        if (i !== entryIdx || entry.items.length <= 1) return entry;
+        return {
+          ...entry,
+          items: entry.items.filter((_, j) => j !== itemIdx),
+        };
+      }),
+    );
+  };
+
+  const addDraftSubQuestion = () => {
+    setAnswerDraftEntries((prev) => {
+      if (prev.length === 0) {
+        return [{ label: '(1)', items: [{ text: '', latex: false }] }];
+      }
+      const lastEntry = prev[prev.length - 1];
+      const lastLatex = lastEntry?.items[lastEntry.items.length - 1]?.latex ?? false;
+      const withFirstLabeled =
+        prev.length === 1 && !prev[0].label?.trim()
+          ? [{ ...prev[0], label: '(1)' }]
+          : prev;
+      return [
+        ...withFirstLabeled,
+        {
+          label: `(${withFirstLabeled.length + 1})`,
+          items: [{ text: '', latex: lastLatex }],
+        },
+      ];
+    });
+  };
+
+  const removeDraftSubQuestion = (entryIdx: number) => {
+    setAnswerDraftEntries((prev) => {
+      if (prev.length <= 1) {
+        return [{ items: [{ text: '', latex: false }] }];
+      }
+      return prev.filter((_, i) => i !== entryIdx);
+    });
+  };
+
   const handleSaveAnswer = () => {
-    void onPatch({ compactAnswer: answerDraft.trim() });
+    const normalized = normalizeAnswerEntries(answerDraftEntries);
+    void onPatch({
+      compactAnswer: summarizeAnswerEntries(normalized),
+      answerEntries: normalized.length > 0 ? normalized : undefined,
+    });
     setEditingAnswer(false);
   };
+
+  const showEditorSubLabels =
+    answerDraftEntries.length > 1 || Boolean(answerDraftEntries[0]?.label?.trim());
 
   return (
     <div className="rounded-2xl border border-base-300 bg-base-100 overflow-hidden">
       {/* Compact 1-Row Accordion Header (Title + Status Badge) */}
       <button
         type="button"
-        onClick={() => setDetailsOpen((v) => !v)}
+        onClick={handleToggleOpen}
         aria-expanded={detailsOpen}
         className="w-full px-4 py-3.5 flex items-center justify-between gap-2.5 text-left hover:bg-base-200/50 transition-colors"
       >
         <div className="flex items-center gap-2 min-w-0">
           <ChevronRight
-            className={`w-4 h-4 text-base-content/45 shrink-0 transition-transform duration-200 ${
+            className={`w-4 h-4 text-base-content/45 shrink-0 transition-transform duration-300 ease-out ${
               detailsOpen ? 'rotate-90' : ''
             }`}
           />
@@ -244,339 +538,501 @@ export function RecordCard({
         </span>
       </button>
 
-      {/* Expandable Details (Status + Miss Reasons + Hints + Answer + Memo) */}
-      {detailsOpen && (
-        <div className="px-4 pb-4 pt-3.5 border-t border-base-300 space-y-3.5">
-          {/* Flex-expanding Status Selector (active button grows wider & bolder) */}
-          <div className="flex items-center gap-1.5 p-1 rounded-xl bg-base-200 border border-base-300">
-            {STATUS_ORDER.map((st) => {
-              const active = values.status === st;
-              return (
-                <button
-                  key={st}
-                  type="button"
-                  onClick={() => void onPatch({ status: st })}
-                  className={`min-w-0 h-10 px-1.5 rounded-lg whitespace-nowrap overflow-hidden transition-all duration-300 ease-out flex items-center justify-center border ${
-                    active
-                      ? `flex-[1.75] text-sm font-semibold shadow-xs ${ACTIVE_STATUS_BUTTON_CLASS[st]}`
-                      : 'flex-1 text-xs font-medium border-transparent text-base-content/55 hover:text-base-content'
-                  }`}
-                >
-                  {STUDY_STATUS_META[st].label}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Miss Reason Tags (Only shown when status is 'review' or 'weak') */}
-          {showMissReasons && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-base-content/65">
-                  ミス原因
-                </span>
-                {!addingReason && (
-                  <button
-                    type="button"
-                    onClick={() => setAddingReason(true)}
-                    className="h-8 px-2.5 rounded-lg bg-base-200/80 hover:bg-base-200 text-xs font-medium text-base-content/75 hover:text-primary flex items-center gap-1 transition-colors"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    追加
-                  </button>
-                )}
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {allReasons.map((reason) => {
-                  const selected = values.missReasons.includes(reason);
+      {/* Expandable Details with smooth Grid height + 360ms staggered vertical entrance */}
+      {renderBody && (
+        <div ref={accordionRef} data-open="false" className="record-accordion">
+          <div className="record-accordion-inner">
+            <div
+              data-record-body
+              className="px-4 pb-4 pt-3.5 border-t border-base-300 space-y-3.5"
+            >
+              {/* Flex-expanding Status Selector (active button grows wider & bolder) */}
+              <div
+                data-record-section
+                className="flex items-center gap-1.5 p-1 rounded-xl bg-base-200 border border-base-300"
+              >
+                {STATUS_ORDER.map((st) => {
+                  const active = values.status === st;
                   return (
                     <button
-                      key={reason}
+                      key={st}
                       type="button"
-                      onClick={() => toggleReason(reason)}
-                      className={`h-8 px-3 rounded-full text-xs font-medium border transition-colors ${
-                        selected
-                          ? 'bg-primary text-primary-content border-primary'
-                          : 'bg-base-200/70 text-base-content/75 border-base-300 hover:bg-base-200'
+                      onClick={() => void onPatch({ status: st })}
+                      className={`min-w-0 h-10 px-1.5 rounded-lg whitespace-nowrap overflow-hidden transition-all duration-300 ease-out flex items-center justify-center border ${
+                        active
+                          ? `flex-[1.75] text-sm font-semibold shadow-xs ${ACTIVE_STATUS_BUTTON_CLASS[st]}`
+                          : 'flex-1 text-xs font-medium border-transparent text-base-content/55 hover:text-base-content'
                       }`}
                     >
-                      {reason}
+                      {STUDY_STATUS_META[st].label}
                     </button>
                   );
                 })}
               </div>
-              {addingReason && (
-                <form onSubmit={handleSaveCustomReason} className="flex gap-1.5 pt-1">
-                  <input
-                    type="text"
-                    autoFocus
-                    value={reasonDraft}
-                    onChange={(e) => setReasonDraft(e.target.value)}
-                    placeholder="原因名"
-                    className="input input-bordered input-sm flex-1 text-sm"
-                  />
-                  <button type="submit" className="btn btn-primary btn-sm">
-                    追加
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAddingReason(false);
-                      setReasonDraft('');
-                    }}
-                    className="btn btn-ghost btn-sm"
-                  >
-                    取消
-                  </button>
-                </form>
-              )}
-            </div>
-          )}
 
-          {/* Hints */}
-          <div className="space-y-2 pt-3 border-t border-base-300">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-base-content/65 flex items-center gap-1.5">
-                <Lightbulb className="w-4 h-4" />
-                ヒント
-              </span>
-              {!addingHint && (
-                <button
-                  type="button"
-                  onClick={() => setAddingHint(true)}
-                  className="h-8 px-2.5 rounded-lg bg-primary/10 hover:bg-primary/18 text-xs font-medium text-primary flex items-center gap-1 transition-colors"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  追加
-                </button>
-              )}
-            </div>
-
-            {values.hints.length > 0 && (
-              <div className="space-y-2">
-                {values.hints.map((hint, idx) => {
-                  const revealed = revealedHints.has(idx);
-                  const isEditing = editingHintIdx === idx;
-                  return (
-                    <div
-                      key={idx}
-                      onClick={!isEditing ? () => toggleHintReveal(idx) : undefined}
-                      className={`rounded-xl border border-base-300 bg-base-200/50 p-3 transition-colors ${
-                        isEditing ? '' : 'cursor-pointer hover:border-base-content/25'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2 mb-1">
-                        <span className="flex items-center gap-1.5 text-xs font-medium text-base-content/60">
-                          {revealed ? (
-                            <EyeOff className="w-3.5 h-3.5" />
-                          ) : (
-                            <Eye className="w-3.5 h-3.5" />
-                          )}
-                          <span>ヒント {idx + 1}</span>
-                        </span>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (isEditing) {
-                                setEditingHintIdx(null);
-                                setEditingHintDraft('');
-                              } else {
-                                handleStartEditHint(idx);
-                              }
-                            }}
-                            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
-                              isEditing
-                                ? 'text-primary bg-primary/15'
-                                : 'text-base-content/60 hover:text-base-content hover:bg-base-300/70'
-                            }`}
-                            title="ヒントを編集"
-                            aria-label="ヒントを編集"
-                          >
-                            <Pencil className="w-4 h-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteHint(idx);
-                            }}
-                            className="w-8 h-8 rounded-lg flex items-center justify-center text-base-content/60 hover:text-error hover:bg-error/10 transition-colors"
-                            title="ヒントを削除"
-                            aria-label="ヒントを削除"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {isEditing ? (
-                        <form onSubmit={handleSaveEditHint} className="space-y-2 pt-1">
-                          <AutoGrowTextarea
-                            autoFocus
-                            value={editingHintDraft}
-                            onChange={(e) => setEditingHintDraft(e.target.value)}
-                            className="bg-base-100"
-                          />
-                          <div className="flex justify-end gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingHintIdx(null);
-                                setEditingHintDraft('');
-                              }}
-                              className="btn btn-ghost btn-sm"
-                            >
-                              キャンセル
-                            </button>
-                            <button type="submit" className="btn btn-primary btn-sm">
-                              保存
-                            </button>
-                          </div>
-                        </form>
-                      ) : (
-                        <p
-                          className={`text-sm leading-relaxed whitespace-pre-wrap spoiler-blur ${
-                            revealed ? 'revealed' : ''
+              {/* Miss Reason Tags (Only shown when status is 'review' or 'weak') */}
+              {showMissReasons && (
+                <div data-record-section className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-base-content/65">
+                      ミス原因
+                    </span>
+                    {!addingReason && (
+                      <button
+                        type="button"
+                        onClick={() => setAddingReason(true)}
+                        className="h-8 px-2.5 rounded-lg bg-base-200/80 hover:bg-base-200 text-xs font-medium text-base-content/75 hover:text-primary flex items-center gap-1 transition-colors"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        追加
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {allReasons.map((reason) => {
+                      const selected = values.missReasons.includes(reason);
+                      return (
+                        <button
+                          key={reason}
+                          type="button"
+                          onClick={() => toggleReason(reason)}
+                          className={`h-8 px-3 rounded-full text-xs font-medium border transition-colors ${
+                            selected
+                              ? 'bg-primary text-primary-content border-primary'
+                              : 'bg-base-200/70 text-base-content/75 border-base-300 hover:bg-base-200'
                           }`}
                         >
-                          {hint}
-                        </p>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {addingHint && (
-              <form onSubmit={handleAddHint} className="space-y-2 pt-1">
-                <AutoGrowTextarea
-                  autoFocus
-                  value={hintDraft}
-                  onChange={(e) => setHintDraft(e.target.value)}
-                  className="bg-base-100"
-                />
-                <div className="flex justify-end gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAddingHint(false);
-                      setHintDraft('');
-                    }}
-                    className="btn btn-ghost btn-sm"
-                  >
-                    キャンセル
-                  </button>
-                  <button type="submit" className="btn btn-primary btn-sm">
-                    保存
-                  </button>
+                          {reason}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {addingReason && (
+                    <form onSubmit={handleSaveCustomReason} className="flex gap-1.5 pt-1">
+                      <input
+                        type="text"
+                        autoFocus
+                        value={reasonDraft}
+                        onChange={(e) => setReasonDraft(e.target.value)}
+                        placeholder="原因名"
+                        className="input input-bordered input-sm flex-1 text-sm"
+                      />
+                      <button type="submit" className="btn btn-primary btn-sm">
+                        追加
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAddingReason(false);
+                          setReasonDraft('');
+                        }}
+                        className="btn btn-ghost btn-sm"
+                      >
+                        取消
+                      </button>
+                    </form>
+                  )}
                 </div>
-              </form>
-            )}
-          </div>
+              )}
 
-          {/* Answer */}
-          <div className="space-y-2 pt-3 border-t border-base-300">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-base-content/65">
-                答え
-              </span>
-              <div className="flex items-center gap-1.5">
-                {!editingAnswer && values.compactAnswer && (
-                  <button
-                    type="button"
-                    onClick={() => setAnswerRevealed((v) => !v)}
-                    className="h-8 px-2.5 rounded-lg bg-primary/10 hover:bg-primary/18 text-xs font-medium text-primary flex items-center gap-1 transition-colors"
-                  >
-                    {answerRevealed ? (
-                      <>
-                        <EyeOff className="w-3.5 h-3.5" />
-                        隠す
-                      </>
-                    ) : (
-                      <>
-                        <Eye className="w-3.5 h-3.5" />
-                        表示
-                      </>
-                    )}
-                  </button>
+              {/* Hints */}
+              <div data-record-section className="space-y-2 pt-3 border-t border-base-300">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-base-content/65 flex items-center gap-1.5">
+                    <Lightbulb className="w-4 h-4" />
+                    ヒント
+                  </span>
+                  {!addingHint && (
+                    <button
+                      type="button"
+                      onClick={() => setAddingHint(true)}
+                      className="h-8 px-2.5 rounded-lg bg-primary/10 hover:bg-primary/18 text-xs font-medium text-primary flex items-center gap-1 transition-colors"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      追加
+                    </button>
+                  )}
+                </div>
+
+                {values.hints.length > 0 && (
+                  <div className="space-y-2">
+                    {values.hints.map((hint, idx) => {
+                      const revealed = revealedHints.has(idx);
+                      const isEditing = editingHintIdx === idx;
+                      return (
+                        <div
+                          key={idx}
+                          onClick={!isEditing ? () => toggleHintReveal(idx) : undefined}
+                          className={`rounded-xl border border-base-300 bg-base-200/50 p-3 transition-colors ${
+                            isEditing ? '' : 'cursor-pointer hover:border-base-content/25'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <span className="flex items-center gap-1.5 text-xs font-medium text-base-content/60">
+                              {revealed ? (
+                                <EyeOff className="w-3.5 h-3.5" />
+                              ) : (
+                                <Eye className="w-3.5 h-3.5" />
+                              )}
+                              <span>ヒント {idx + 1}</span>
+                            </span>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (isEditing) {
+                                    setEditingHintIdx(null);
+                                    setEditingHintDraft('');
+                                  } else {
+                                    handleStartEditHint(idx);
+                                  }
+                                }}
+                                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                                  isEditing
+                                    ? 'text-primary bg-primary/15'
+                                    : 'text-base-content/60 hover:text-base-content hover:bg-base-300/70'
+                                }`}
+                                title="ヒントを編集"
+                                aria-label="ヒントを編集"
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteHint(idx);
+                                }}
+                                className="w-8 h-8 rounded-lg flex items-center justify-center text-base-content/60 hover:text-error hover:bg-error/10 transition-colors"
+                                title="ヒントを削除"
+                                aria-label="ヒントを削除"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {isEditing ? (
+                            <form onSubmit={handleSaveEditHint} className="space-y-2 pt-1">
+                              <AutoGrowTextarea
+                                autoFocus
+                                value={editingHintDraft}
+                                onChange={(e) => setEditingHintDraft(e.target.value)}
+                                className="bg-base-100"
+                              />
+                              <div className="flex justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingHintIdx(null);
+                                    setEditingHintDraft('');
+                                  }}
+                                  className="btn btn-ghost btn-sm"
+                                >
+                                  キャンセル
+                                </button>
+                                <button type="submit" className="btn btn-primary btn-sm">
+                                  保存
+                                </button>
+                              </div>
+                            </form>
+                          ) : (
+                            <p
+                              className={`text-sm leading-relaxed whitespace-pre-wrap spoiler-blur ${
+                                revealed ? 'revealed' : ''
+                              }`}
+                            >
+                              {hint}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAnswerDraft(values.compactAnswer);
-                    setEditingAnswer((v) => !v);
+
+                {addingHint && (
+                  <form onSubmit={handleAddHint} className="space-y-2 pt-1">
+                    <AutoGrowTextarea
+                      autoFocus
+                      value={hintDraft}
+                      onChange={(e) => setHintDraft(e.target.value)}
+                      className="bg-base-100"
+                    />
+                    <div className="flex justify-end gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAddingHint(false);
+                          setHintDraft('');
+                        }}
+                        className="btn btn-ghost btn-sm"
+                      >
+                        キャンセル
+                      </button>
+                      <button type="submit" className="btn btn-primary btn-sm">
+                        保存
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+
+              {/* Answer (Supports Sub-Questions, Multi-Answer Stacking, and KaTeX) */}
+              <div data-record-section className="space-y-2 pt-3 border-t border-base-300">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-base-content/65">
+                    答え
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {!editingAnswer && resolvedAnswers.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={toggleAllAnswersReveal}
+                        className="h-8 px-2.5 rounded-lg bg-primary/10 hover:bg-primary/18 text-xs font-medium text-primary flex items-center gap-1 transition-colors"
+                      >
+                        {allAnswersRevealed ? (
+                          <>
+                            <EyeOff className="w-3.5 h-3.5" />
+                            隠す
+                          </>
+                        ) : (
+                          <>
+                            <Eye className="w-3.5 h-3.5" />
+                            表示
+                          </>
+                        )}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleToggleEditAnswer}
+                      className={`h-8 px-2.5 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors ${
+                        editingAnswer
+                          ? 'bg-primary/15 text-primary'
+                          : 'bg-base-200/80 hover:bg-base-200 text-base-content/75 hover:text-base-content'
+                      }`}
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                      編集
+                    </button>
+                  </div>
+                </div>
+
+                {editingAnswer ? (
+                  <div className="space-y-2.5">
+                    {answerDraftEntries.map((entry, entryIdx) => (
+                      <div
+                        key={entryIdx}
+                        className="rounded-xl border border-base-300 bg-base-200/40 p-2.5 space-y-2"
+                      >
+                        {showEditorSubLabels && (
+                          <div className="flex items-center justify-between gap-2">
+                            <input
+                              type="text"
+                              value={entry.label ?? ''}
+                              onChange={(e) =>
+                                updateDraftEntryLabel(entryIdx, e.target.value)
+                              }
+                              placeholder={`(${entryIdx + 1})`}
+                              aria-label="小問番号"
+                              className="w-24 h-8 px-2.5 rounded-lg border border-base-300 bg-base-100 text-xs font-semibold focus:outline-none focus:border-primary"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => removeDraftSubQuestion(entryIdx)}
+                              className="w-8 h-8 rounded-lg flex items-center justify-center text-base-content/55 hover:text-error hover:bg-error/10 transition-colors"
+                              title="小問を削除"
+                              aria-label="小問を削除"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="space-y-2">
+                          {entry.items.map((item, itemIdx) => (
+                            <div key={itemIdx} className="space-y-1.5">
+                              <div className="flex items-start gap-1.5">
+                                <AutoGrowTextarea
+                                  autoFocus={entryIdx === 0 && itemIdx === 0}
+                                  value={item.text}
+                                  onChange={(e) =>
+                                    updateDraftItemText(
+                                      entryIdx,
+                                      itemIdx,
+                                      e.target.value,
+                                    )
+                                  }
+                                  className={`flex-1 bg-base-100 ${
+                                    item.latex ? 'font-mono text-xs' : ''
+                                  }`}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    toggleDraftItemLatex(entryIdx, itemIdx)
+                                  }
+                                  aria-pressed={item.latex}
+                                  title="LaTeX表示を切り替え"
+                                  className={`h-[38px] px-2 rounded-xl border text-[11px] font-mono font-semibold shrink-0 transition-colors ${
+                                    item.latex
+                                      ? 'bg-primary text-primary-content border-primary'
+                                      : 'bg-base-100 text-base-content/60 border-base-300 hover:text-base-content'
+                                  }`}
+                                >
+                                  TeX
+                                </button>
+                                {entry.items.length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      removeDraftItemFromEntry(entryIdx, itemIdx)
+                                    }
+                                    className="w-8 h-[38px] rounded-xl flex items-center justify-center text-base-content/50 hover:text-error hover:bg-error/10 shrink-0 transition-colors"
+                                    title="回答行を削除"
+                                    aria-label="回答行を削除"
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+
+                              {item.latex && item.text.trim() && (
+                                <div className="px-2.5 py-1.5 rounded-lg bg-base-100/90 border border-base-300/80 text-base-content">
+                                  <MathText text={item.text} latex={true} />
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => addDraftItemToEntry(entryIdx)}
+                          className="h-7 px-2 rounded-lg text-[11px] font-medium text-base-content/65 hover:text-primary hover:bg-base-200 inline-flex items-center gap-1 transition-colors"
+                        >
+                          <Plus className="w-3 h-3" />
+                          回答を追加
+                        </button>
+                      </div>
+                    ))}
+
+                    <div className="flex items-center justify-between gap-2 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={addDraftSubQuestion}
+                        className="h-8 px-2.5 rounded-lg bg-base-200/80 hover:bg-base-200 text-xs font-medium text-base-content/75 hover:text-primary inline-flex items-center gap-1 transition-colors"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        小問を追加
+                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setEditingAnswer(false)}
+                          className="btn btn-ghost btn-sm"
+                        >
+                          キャンセル
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveAnswer}
+                          className="btn btn-primary btn-sm"
+                        >
+                          保存
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : resolvedAnswers.length > 0 ? (
+                  isSubQuestionMode ? (
+                    <div className="space-y-2">
+                      {resolvedAnswers.map((entry, entryIdx) => {
+                        const revealed = revealedAnswers.has(entryIdx);
+                        const label = entry.label?.trim() || `(${entryIdx + 1})`;
+                        return (
+                          <div
+                            key={entryIdx}
+                            onClick={() => toggleAnswerReveal(entryIdx)}
+                            className="rounded-xl border border-base-300 bg-base-200/50 p-3 cursor-pointer hover:border-base-content/25 transition-colors"
+                          >
+                            <div className="flex items-center justify-between gap-2 mb-1.5">
+                              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">
+                                {revealed ? (
+                                  <EyeOff className="w-3.5 h-3.5 text-base-content/50" />
+                                ) : (
+                                  <Eye className="w-3.5 h-3.5 text-base-content/50" />
+                                )}
+                                <span>{label}</span>
+                              </span>
+                            </div>
+                            <div
+                              className={`spoiler-blur ${revealed ? 'revealed' : ''}`}
+                            >
+                              {entry.items.map((item, itemIdx) => (
+                                <div
+                                  key={itemIdx}
+                                  className={
+                                    itemIdx > 0
+                                      ? 'border-t border-base-300/75 pt-2 mt-2'
+                                      : ''
+                                  }
+                                >
+                                  <MathText text={item.text} latex={item.latex} />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div
+                      onClick={() => toggleAnswerReveal(0)}
+                      className="p-3 rounded-xl border border-base-300 bg-base-200/50 cursor-pointer hover:border-base-content/25 transition-colors"
+                    >
+                      <div
+                        className={`spoiler-blur ${
+                          revealedAnswers.has(0) ? 'revealed' : ''
+                        }`}
+                      >
+                        {resolvedAnswers[0].items.map((item, itemIdx) => (
+                          <div
+                            key={itemIdx}
+                            className={
+                              itemIdx > 0
+                                ? 'border-t border-base-300/75 pt-2 mt-2'
+                                : ''
+                            }
+                          >
+                            <MathText text={item.text} latex={item.latex} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                ) : null}
+              </div>
+
+              {/* Memo (1-row slim, auto-grows with content) */}
+              <div data-record-section className="space-y-2 pt-3 border-t border-base-300">
+                <span className="text-xs font-semibold text-base-content/65 block">
+                  メモ
+                </span>
+                <AutoGrowTextarea
+                  value={memoDraft}
+                  onChange={(e) => setMemoDraft(e.target.value)}
+                  onBlur={() => {
+                    if (memoDraft !== values.memo) {
+                      void onPatch({ memo: memoDraft });
+                    }
                   }}
-                  className={`h-8 px-2.5 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors ${
-                    editingAnswer
-                      ? 'bg-primary/15 text-primary'
-                      : 'bg-base-200/80 hover:bg-base-200 text-base-content/75 hover:text-base-content'
-                  }`}
-                >
-                  <Pencil className="w-3.5 h-3.5" />
-                  編集
-                </button>
+                  className="bg-base-200/40"
+                />
               </div>
             </div>
-
-            {editingAnswer ? (
-              <div className="space-y-2">
-                <AutoGrowTextarea
-                  autoFocus
-                  value={answerDraft}
-                  onChange={(e) => setAnswerDraft(e.target.value)}
-                  className="bg-base-100 font-mono"
-                />
-                <div className="flex justify-end gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setEditingAnswer(false)}
-                    className="btn btn-ghost btn-sm"
-                  >
-                    キャンセル
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSaveAnswer}
-                    className="btn btn-primary btn-sm"
-                  >
-                    保存
-                  </button>
-                </div>
-              </div>
-            ) : values.compactAnswer ? (
-              <div
-                onClick={() => setAnswerRevealed((v) => !v)}
-                className="p-3 rounded-xl border border-base-300 bg-base-200/50 cursor-pointer hover:border-base-content/25 transition-colors"
-              >
-                <p
-                  className={`text-sm font-mono leading-relaxed whitespace-pre-wrap spoiler-blur ${
-                    answerRevealed ? 'revealed' : ''
-                  }`}
-                >
-                  {values.compactAnswer}
-                </p>
-              </div>
-            ) : null}
-          </div>
-
-          {/* Memo (1-row slim, auto-grows with content) */}
-          <div className="space-y-2 pt-3 border-t border-base-300">
-            <span className="text-xs font-semibold text-base-content/65 block">
-              メモ
-            </span>
-            <AutoGrowTextarea
-              value={memoDraft}
-              onChange={(e) => setMemoDraft(e.target.value)}
-              onBlur={() => {
-                if (memoDraft !== values.memo) {
-                  void onPatch({ memo: memoDraft });
-                }
-              }}
-              className="bg-base-200/40"
-            />
           </div>
         </div>
       )}

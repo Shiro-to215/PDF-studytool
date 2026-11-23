@@ -10,6 +10,18 @@ export interface MissHistoryEntry {
   reasons: string[];
 }
 
+export interface AnswerValueItem {
+  text: string;
+  latex: boolean;
+}
+
+export interface AnswerEntry {
+  /** Sub-question label such as "(1)", "(2)", "(ア)". Omitted when not split into sub-questions */
+  label?: string;
+  /** One or more answer values within this question or sub-question */
+  items: AnswerValueItem[];
+}
+
 export interface Workbook {
   id: string;
   title: string;
@@ -41,6 +53,7 @@ export interface PageState {
   missHistory: MissHistoryEntry[];
   hints: string[];
   compactAnswer: string;
+  answerEntries?: AnswerEntry[];
   memo: string;
   updatedAt: number;
 }
@@ -65,6 +78,7 @@ export interface Problem {
   missHistory: MissHistoryEntry[];
   hints: string[];
   compactAnswer: string;
+  answerEntries?: AnswerEntry[];
   memo: string;
   updatedAt: number;
 }

@@ -247,7 +247,7 @@ export async function upsertPageState(
   workbookId: string,
   pageNumber: number,
   patch: Partial<
-    Pick<PageState, 'status' | 'missReasons' | 'hints' | 'compactAnswer' | 'memo'>
+    Pick<PageState, 'status' | 'missReasons' | 'hints' | 'compactAnswer' | 'answerEntries' | 'memo'>
   >,
 ): Promise<PageState> {
   const id = getPageStateId(workbookId, pageNumber);
@@ -275,6 +275,8 @@ export async function upsertPageState(
     missHistory: history,
     hints: patch.hints ?? existing?.hints ?? [],
     compactAnswer: patch.compactAnswer ?? existing?.compactAnswer ?? '',
+    answerEntries:
+      'answerEntries' in patch ? patch.answerEntries : existing?.answerEntries,
     memo: patch.memo ?? existing?.memo ?? '',
     updatedAt: now,
   };
@@ -289,7 +291,14 @@ export async function upsertProblem(
   patch: Partial<
     Pick<
       Problem,
-      'status' | 'missReasons' | 'hints' | 'compactAnswer' | 'memo' | 'pageNumber' | 'numberLabel'
+      | 'status'
+      | 'missReasons'
+      | 'hints'
+      | 'compactAnswer'
+      | 'answerEntries'
+      | 'memo'
+      | 'pageNumber'
+      | 'numberLabel'
     >
   >,
 ): Promise<Problem | undefined> {

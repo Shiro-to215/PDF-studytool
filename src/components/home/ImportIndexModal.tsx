@@ -14,9 +14,25 @@ interface ImportIndexModalProps {
   onImported?: (summary: ImportSummary) => void;
 }
 
-const EXAMPLE_CSV = `path,problemNumber,page,answer,hints
-力学/運動方程式/基本問題,問42,34,"(1) a = 3.0 m/s^2  (2) f = 9.0 N","AとBを一体とみなす|Bだけに着目する"
-力学/摩擦力/発展問題,発展3,38,"F = μ(M + m)g","最大静止摩擦力に達する瞬間を考える"`;
+const EXAMPLE_JSON = `[
+  {
+    "path": "力学/運動方程式/基本問題",
+    "problemNumber": "問42",
+    "page": 34,
+    "latex": true,
+    "answer": [
+      { "label": "(1)", "value": ["a = 3.0\\\\,\\\\mathrm{m/s^2}", "T = 12\\\\,\\\\mathrm{N}"] },
+      { "label": "(2)", "value": "右向き", "latex": false }
+    ]
+  },
+  {
+    "path": "力学/摩擦力/発展問題",
+    "problemNumber": "発展3",
+    "page": 38,
+    "latex": true,
+    "answer": "F = \\\\mu (M + m) g"
+  }
+]`;
 
 export function ImportIndexModal({
   open,
@@ -99,13 +115,13 @@ export function ImportIndexModal({
               <button
                 type="button"
                 onClick={() => {
-                  setRawText(EXAMPLE_CSV);
+                  setRawText(EXAMPLE_JSON);
                   setSummary(null);
                 }}
                 className="btn btn-ghost btn-xs border border-base-300"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5" />
-                入力例を挿入
+                JSON例を挿入
               </button>
               <button
                 type="button"
@@ -133,7 +149,7 @@ export function ImportIndexModal({
               setError(null);
             }}
             rows={8}
-            placeholder={EXAMPLE_CSV}
+            placeholder={EXAMPLE_JSON}
             className="textarea textarea-bordered w-full font-mono text-xs leading-relaxed"
           />
 
@@ -150,22 +166,37 @@ export function ImportIndexModal({
                 <span className="text-base-content/50">既存問題の進捗・状態は維持されます</span>
               </div>
               <div className="max-h-36 overflow-y-auto thin-scrollbar divide-y divide-base-300 text-xs">
-                {preview.rows.slice(0, 8).map((r, idx) => (
-                  <div key={idx} className="py-1.5 flex items-center justify-between gap-3">
-                    <div className="min-w-0 truncate">
-                      <span className="text-base-content/50 mr-2">{r.path || '（階層なし）'}</span>
-                      <span className="font-semibold">{r.problemNumber}</span>
+                {preview.rows.slice(0, 8).map((r, idx) => {
+                  const subCount = r.answerEntries?.length ?? 0;
+                  const usesLatex =
+                    r.answerEntries?.some((e) => e.items.some((i) => i.latex)) ?? false;
+                  return (
+                    <div key={idx} className="py-1.5 flex items-center justify-between gap-3">
+                      <div className="min-w-0 truncate">
+                        <span className="text-base-content/50 mr-2">{r.path || '（階層なし）'}</span>
+                        <span className="font-semibold">{r.problemNumber}</span>
+                      </div>
+                      <div className="shrink-0 flex items-center gap-2 text-base-content/70">
+                        {usesLatex && (
+                          <span className="px-1.5 py-0.5 rounded bg-primary/12 text-primary text-[10px] font-mono font-semibold">
+                            TeX
+                          </span>
+                        )}
+                        {subCount > 1 && (
+                          <span className="px-1.5 py-0.5 rounded bg-base-300/80 text-base-content/75 text-[10px] font-medium">
+                            小問{subCount}
+                          </span>
+                        )}
+                        <span className="font-mono">P.{r.page}</span>
+                        {r.answer && (
+                          <span className="max-w-[140px] truncate text-base-content/50">
+                            答: {r.answer}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="shrink-0 flex items-center gap-3 text-base-content/70">
-                      <span className="font-mono">P.{r.page}</span>
-                      {r.answer && (
-                        <span className="max-w-[160px] truncate text-base-content/50">
-                          答: {r.answer}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {preview.rows.length > 8 && (
                   <p className="py-1.5 text-center text-base-content/50">
                     ほか {preview.rows.length - 8} 件...

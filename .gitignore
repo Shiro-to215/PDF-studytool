@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output (rebuilt automatically by GitHub Actions on deploy)
+dist/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Logs & OS files
+*.log
+.DS_Store
+Thumbs.db
+
+# Local env files
+.env
+.env.local
+.env.*.local

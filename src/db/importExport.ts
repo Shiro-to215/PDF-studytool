@@ -1,17 +1,20 @@
 import { createId, db } from './database';
 import type {
+  AnswerEntry,
   PageState,
   PageStrokes,
   Problem,
   UnitNode,
   Workbook,
 } from '../types/models';
+import { parseJsonAnswerField } from '../utils/answerFormat';
 
 export interface ParsedImportRow {
   path: string;
   problemNumber: string;
   page: number;
   answer: string;
+  answerEntries?: AnswerEntry[];
   hints: string[];
 }
 
@@ -102,14 +105,23 @@ export function parseImportInput(rawText: string): ParsedImportRow[] {
       if (!problemNumber || !Number.isFinite(page) || page < 1) continue;
 
       const path = String(obj.path ?? obj.unit ?? '').trim();
-      const answer = String(obj.answer ?? obj.compactAnswer ?? '').trim();
+      const defaultLatex = Boolean(obj.latex ?? obj.answerLatex ?? false);
+      const rawAnswer = obj.answer ?? obj.answers ?? obj.compactAnswer;
+      const { answerEntries, compactAnswer } = parseJsonAnswerField(rawAnswer, defaultLatex);
       const hints = Array.isArray(obj.hints)
         ? obj.hints.map((h) => String(h).trim()).filter(Boolean)
         : typeof obj.hint === 'string' && obj.hint.trim()
           ? [obj.hint.trim()]
           : [];
 
-      rows.push({ path, problemNumber, page: Math.floor(page), answer, hints });
+      rows.push({
+        path,
+        problemNumber,
+        page: Math.floor(page),
+        answer: compactAnswer,
+        answerEntries: answerEntries.length > 0 ? answerEntries : undefined,
+        hints,
+      });
     }
     return rows;
   }
@@ -234,11 +246,13 @@ export async function importProblemsToWorkbook(
       problemByPageAndNum.get(`${row.page}::${row.problemNumber}`);
 
     if (match) {
+      const hasNewAnswer = Boolean(row.answer) || Boolean(row.answerEntries?.length);
       const updated: Problem = {
         ...match,
         unitId,
         pageNumber: row.page,
-        compactAnswer: row.answer || match.compactAnswer,
+        compactAnswer: hasNewAnswer ? row.answer : match.compactAnswer,
+        answerEntries: hasNewAnswer ? row.answerEntries : match.answerEntries,
         hints: row.hints.length > 0 ? row.hints : match.hints,
         updatedAt: now,
       };
@@ -260,6 +274,7 @@ export async function importProblemsToWorkbook(
         missHistory: [],
         hints: row.hints,
         compactAnswer: row.answer,
+        answerEntries: row.answerEntries,
         memo: '',
         updatedAt: now,
       };
