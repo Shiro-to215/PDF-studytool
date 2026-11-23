@@ -105,6 +105,8 @@ interface ViewerStore {
   sidebarTab: SidebarTab;
   tocUnitId: string | null;
   pageNavSeq: number;
+  requestedRecordKey: string | null;
+  requestedRecordSeq: number;
 
   openWorkbook: (params: {
     workbookId: string;
@@ -127,6 +129,7 @@ interface ViewerStore {
   toggleSidebar: () => void;
   setSidebarTab: (tab: SidebarTab) => void;
   setTocUnitId: (unitId: string | null) => void;
+  openRecordItem: (recordKey: string) => void;
 }
 
 export const useViewerStore = create<ViewerStore>((set, get) => ({
@@ -144,6 +147,8 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
   sidebarTab: 'record',
   tocUnitId: null,
   pageNavSeq: 0,
+  requestedRecordKey: null,
+  requestedRecordSeq: 0,
 
   openWorkbook: ({
     workbookId,
@@ -169,6 +174,7 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
       panY: 0,
       tocUnitId: null,
       pageNavSeq: 0,
+      requestedRecordKey: null,
       ...(initialTab ? { sidebarTab: initialTab, sidebarOpen: true } : {}),
     });
   },
@@ -178,6 +184,7 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
       activeWorkbookId: null,
       tocUnitId: null,
       pageNavSeq: 0,
+      requestedRecordKey: null,
       scale: 1,
       panX: 0,
       panY: 0,
@@ -219,4 +226,11 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarTab: (sidebarTab) => set({ sidebarTab, sidebarOpen: true }),
   setTocUnitId: (tocUnitId) => set({ tocUnitId }),
+  openRecordItem: (recordKey) =>
+    set((s) => ({
+      sidebarTab: 'record',
+      sidebarOpen: true,
+      requestedRecordKey: recordKey,
+      requestedRecordSeq: s.requestedRecordSeq + 1,
+    })),
 }));

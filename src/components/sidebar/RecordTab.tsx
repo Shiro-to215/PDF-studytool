@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   resolveWorkbookMissReasons,
   type PageState,
@@ -30,6 +30,8 @@ export function RecordTab({
     spreadMode,
     bindingDirection,
     coverSinglePage,
+    requestedRecordKey,
+    requestedRecordSeq,
   } = useViewerStore();
 
   const layout = getSpreadLayout(
@@ -48,10 +50,30 @@ export function RecordTab({
 
   // Allow only one RecordCard expanded at a time (auto-collapse others)
   const [openRecordKey, setOpenRecordKey] = useState<string | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const lastHandledReqSeqRef = useRef(requestedRecordSeq);
   const visiblePagesKey = visiblePages.join(',');
   useEffect(() => {
     setOpenRecordKey(null);
   }, [visiblePagesKey, workbook.id]);
+
+  // Auto-open & scroll into view when jumped from ReviewTab
+  useEffect(() => {
+    if (requestedRecordSeq === lastHandledReqSeqRef.current) return;
+    lastHandledReqSeqRef.current = requestedRecordSeq;
+    if (!requestedRecordKey) return;
+    setOpenRecordKey(requestedRecordKey);
+
+    const frame = window.requestAnimationFrame(() => {
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      const target = container.querySelector<HTMLElement>(
+        `[data-record-key="${CSS.escape(requestedRecordKey)}"]`,
+      );
+      target?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [requestedRecordKey, requestedRecordSeq]);
 
   const handleToggleCard = (key: string) => {
     setOpenRecordKey((prev) => (prev === key ? null : key));
@@ -85,33 +107,37 @@ export function RecordTab({
   };
 
   return (
-    <div className="flex-1 overflow-y-auto thin-scrollbar p-3.5 space-y-3">
+    <div
+      ref={scrollContainerRef}
+      className="flex-1 overflow-y-auto thin-scrollbar p-3.5 space-y-3"
+    >
       {visiblePages.flatMap((pageNum) => {
         const pageProblems = problemsByPage.get(pageNum) ?? [];
         if (pageProblems.length > 0) {
           return pageProblems.map((prob) => {
             const cardKey = `prob:${prob.id}`;
             return (
-              <RecordCard
-                key={cardKey}
-                recordKey={cardKey}
-                isOpen={openRecordKey === cardKey}
-                onToggle={() => handleToggleCard(cardKey)}
-                values={{
-                  title: prob.numberLabel,
-                  status: prob.status,
-                  missReasons: prob.missReasons,
-                  hints: prob.hints,
-                  compactAnswer: prob.compactAnswer,
-                  answerEntries: prob.answerEntries,
-                  memo: prob.memo,
-                }}
-                reasonOptions={reasonOptions}
-                onPatch={(patch) => {
-                  void upsertProblem(prob.id, patch);
-                }}
-                onSaveReasonOptions={handleSaveReasonOptions}
-              />
+              <div key={cardKey} data-record-key={cardKey}>
+                <RecordCard
+                  recordKey={cardKey}
+                  isOpen={openRecordKey === cardKey}
+                  onToggle={() => handleToggleCard(cardKey)}
+                  values={{
+                    title: prob.numberLabel,
+                    status: prob.status,
+                    missReasons: prob.missReasons,
+                    hints: prob.hints,
+                    compactAnswer: prob.compactAnswer,
+                    answerEntries: prob.answerEntries,
+                    memo: prob.memo,
+                  }}
+                  reasonOptions={reasonOptions}
+                  onPatch={(patch) => {
+                    void upsertProblem(prob.id, patch);
+                  }}
+                  onSaveReasonOptions={handleSaveReasonOptions}
+                />
+              </div>
             );
           });
         }
@@ -119,26 +145,27 @@ export function RecordTab({
         const pageState = pageStateMap.get(pageNum);
         const pageKey = `page:${workbook.id}:${pageNum}`;
         return [
-          <RecordCard
-            key={pageKey}
-            recordKey={pageKey}
-            isOpen={openRecordKey === pageKey}
-            onToggle={() => handleToggleCard(pageKey)}
-            values={{
-              title: `P.${pageNum}`,
-              status: pageState?.status ?? 'none',
-              missReasons: pageState?.missReasons ?? [],
-              hints: pageState?.hints ?? [],
-              compactAnswer: pageState?.compactAnswer ?? '',
-              answerEntries: pageState?.answerEntries,
-              memo: pageState?.memo ?? '',
-            }}
-            reasonOptions={reasonOptions}
-            onPatch={(patch) => {
-              void upsertPageState(workbook.id, pageNum, patch);
-            }}
-            onSaveReasonOptions={handleSaveReasonOptions}
-          />,
+          <div key={pageKey} data-record-key={pageKey}>
+            <RecordCard
+              recordKey={pageKey}
+              isOpen={openRecordKey === pageKey}
+              onToggle={() => handleToggleCard(pageKey)}
+              values={{
+                title: `P.${pageNum}`,
+                status: pageState?.status ?? 'none',
+                missReasons: pageState?.missReasons ?? [],
+                hints: pageState?.hints ?? [],
+                compactAnswer: pageState?.compactAnswer ?? '',
+                answerEntries: pageState?.answerEntries,
+                memo: pageState?.memo ?? '',
+              }}
+              reasonOptions={reasonOptions}
+              onPatch={(patch) => {
+                void upsertPageState(workbook.id, pageNum, patch);
+              }}
+              onSaveReasonOptions={handleSaveReasonOptions}
+            />
+          </div>,
         ];
       })}
     </div>

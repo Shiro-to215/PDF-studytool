@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 import {
   STUDY_STATUS_META,
   type PageState,
@@ -15,9 +16,11 @@ interface ReviewTabProps {
 
 interface ReviewItem {
   id: string;
+  recordKey: string;
   label: string;
   isPageRecord: boolean;
   pageNumber: number;
+  order: number;
   status: StudyStatus;
   missReasons: string[];
 }
@@ -47,6 +50,7 @@ export function ReviewTab({ pageStates, problems, reasonOptions }: ReviewTabProp
     bindingDirection,
     coverSinglePage,
     setCurrentPage,
+    openRecordItem,
   } = useViewerStore();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [reasonFilter, setReasonFilter] = useState<string>('all');
@@ -67,11 +71,14 @@ export function ReviewTab({ pageStates, problems, reasonOptions }: ReviewTabProp
 
     for (const p of problems) {
       if (p.status === 'review' || p.status === 'weak') {
+        const recordKey = `prob:${p.id}`;
         items.push({
-          id: `prob:${p.id}`,
+          id: recordKey,
+          recordKey,
           label: p.numberLabel,
           isPageRecord: false,
           pageNumber: p.pageNumber,
+          order: p.order,
           status: p.status,
           missReasons: p.missReasons,
         });
@@ -80,18 +87,21 @@ export function ReviewTab({ pageStates, problems, reasonOptions }: ReviewTabProp
 
     for (const s of pageStates) {
       if (s.status === 'review' || s.status === 'weak') {
+        const recordKey = `page:${s.workbookId}:${s.pageNumber}`;
         items.push({
           id: `page:${s.id}`,
+          recordKey,
           label: `P.${s.pageNumber}`,
           isPageRecord: true,
           pageNumber: s.pageNumber,
+          order: Number.MAX_SAFE_INTEGER,
           status: s.status,
           missReasons: s.missReasons,
         });
       }
     }
 
-    return items.sort((a, b) => a.pageNumber - b.pageNumber);
+    return items.sort((a, b) => a.pageNumber - b.pageNumber || a.order - b.order);
   }, [problems, pageStates]);
 
   // Always show all workbook miss reasons regardless of whether any review item matches them
@@ -119,9 +129,14 @@ export function ReviewTab({ pageStates, problems, reasonOptions }: ReviewTabProp
     [allItems, statusFilter, reasonFilter],
   );
 
-  // Stay on the Review tab when jumping to a problem page
-  const handleJump = (item: ReviewItem) => {
-    setCurrentPage(item.pageNumber);
+  // 1st tap on another page: jump to page & stay on Review tab
+  // Tap on a card already in the current spread: switch to Record tab & expand that problem
+  const handleSelectReviewItem = (item: ReviewItem) => {
+    if (visiblePageSet.has(item.pageNumber)) {
+      openRecordItem(item.recordKey);
+    } else {
+      setCurrentPage(item.pageNumber);
+    }
   };
 
   return (
@@ -181,8 +196,8 @@ export function ReviewTab({ pageStates, problems, reasonOptions }: ReviewTabProp
         </div>
       </div>
 
-      {/* Review List */}
-      <div className="flex-1 overflow-y-auto thin-scrollbar p-3.5 space-y-2.5">
+      {/* Review List (Compact 1-row cards) */}
+      <div className="flex-1 overflow-y-auto thin-scrollbar p-3.5 space-y-2">
         {filtered.length === 0 ? (
           <div className="py-12 text-center space-y-1.5">
             <p className="text-sm font-medium text-base-content/60">
@@ -199,45 +214,35 @@ export function ReviewTab({ pageStates, problems, reasonOptions }: ReviewTabProp
               <button
                 key={item.id}
                 type="button"
-                onClick={() => handleJump(item)}
-                className={`w-full text-left p-3.5 rounded-2xl border transition-colors space-y-2 ${
+                onClick={() => handleSelectReviewItem(item)}
+                className={`w-full text-left px-3.5 py-3 rounded-2xl border transition-colors flex items-center justify-between gap-2.5 ${
                   isCurrent
                     ? 'border-primary/50 bg-primary/[0.04] hover:bg-primary/[0.08]'
                     : 'border-base-300 bg-base-100 hover:border-primary/45 hover:bg-base-200/40'
                 }`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    {!item.isPageRecord && (
-                      <span className="text-xs font-mono font-medium px-2 py-0.5 rounded-lg bg-base-200 text-base-content/75 shrink-0">
-                        P.{item.pageNumber}
-                      </span>
-                    )}
-                    <span className="text-[15px] font-semibold text-base-content truncate">
-                      {item.label}
+                <div className="flex items-center gap-2 min-w-0">
+                  {!item.isPageRecord && (
+                    <span className="text-xs font-mono font-medium px-2 py-0.5 rounded-lg bg-base-200 text-base-content/75 shrink-0">
+                      P.{item.pageNumber}
                     </span>
-                  </div>
+                  )}
+                  <span className="text-[15px] font-semibold text-base-content truncate">
+                    {item.label}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
                   <span
-                    className={`text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 ${
+                    className={`text-xs font-medium px-2.5 py-1 rounded-full border ${
                       STUDY_STATUS_META[item.status].badgeClass
                     }`}
                   >
                     {STUDY_STATUS_META[item.status].label}
                   </span>
+                  {isCurrent && (
+                    <ChevronRight className="w-4 h-4 text-primary/65" />
+                  )}
                 </div>
-
-                {item.missReasons.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {item.missReasons.map((r) => (
-                      <span
-                        key={r}
-                        className="text-xs font-medium px-2.5 py-0.5 rounded-full bg-base-200 text-base-content/70"
-                      >
-                        {r}
-                      </span>
-                    ))}
-                  </div>
-                )}
               </button>
             );
           })
