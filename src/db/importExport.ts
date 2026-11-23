@@ -362,6 +362,9 @@ export async function importBackupJson(jsonText: string): Promise<{
         coverSinglePage: bWb.coverSinglePage,
         layers: Array.from(new Set([...target.layers, ...(bWb.layers ?? [])])),
         customReasons: Array.from(new Set([...target.customReasons, ...(bWb.customReasons ?? [])])),
+        ...(bWb.missReasonOptions !== undefined
+          ? { missReasonOptions: bWb.missReasonOptions }
+          : {}),
         lastPage: bWb.lastPage,
       });
       restoredWorkbooks++;

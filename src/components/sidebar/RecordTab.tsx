@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { PageState, Problem, Workbook } from '../../types/models';
 import {
-  addCustomMissReason,
+  resolveWorkbookMissReasons,
+  type PageState,
+  type Problem,
+  type Workbook,
+} from '../../types/models';
+import {
+  updateWorkbookMissReasons,
   upsertPageState,
   upsertProblem,
 } from '../../db/database';
@@ -70,6 +75,15 @@ export function RecordTab({
     return map;
   }, [problems]);
 
+  const reasonOptions = useMemo(() => resolveWorkbookMissReasons(workbook), [workbook]);
+
+  const handleSaveReasonOptions = (
+    nextReasons: string[],
+    renameMap: Record<string, string>,
+  ) => {
+    void updateWorkbookMissReasons(workbook.id, nextReasons, renameMap);
+  };
+
   return (
     <div className="flex-1 overflow-y-auto thin-scrollbar p-3.5 space-y-3">
       {visiblePages.flatMap((pageNum) => {
@@ -92,13 +106,11 @@ export function RecordTab({
                   answerEntries: prob.answerEntries,
                   memo: prob.memo,
                 }}
-                customReasons={workbook.customReasons}
+                reasonOptions={reasonOptions}
                 onPatch={(patch) => {
                   void upsertProblem(prob.id, patch);
                 }}
-                onAddCustomReason={(reason) => {
-                  void addCustomMissReason(workbook.id, reason);
-                }}
+                onSaveReasonOptions={handleSaveReasonOptions}
               />
             );
           });
@@ -121,13 +133,11 @@ export function RecordTab({
               answerEntries: pageState?.answerEntries,
               memo: pageState?.memo ?? '',
             }}
-            customReasons={workbook.customReasons}
+            reasonOptions={reasonOptions}
             onPatch={(patch) => {
               void upsertPageState(workbook.id, pageNum, patch);
             }}
-            onAddCustomReason={(reason) => {
-              void addCustomMissReason(workbook.id, reason);
-            }}
+            onSaveReasonOptions={handleSaveReasonOptions}
           />,
         ];
       })}

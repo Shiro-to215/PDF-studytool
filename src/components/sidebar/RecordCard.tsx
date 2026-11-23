@@ -15,7 +15,6 @@ import {
   X,
 } from 'lucide-react';
 import {
-  DEFAULT_MISS_REASONS,
   STUDY_STATUS_META,
   type AnswerEntry,
   type StudyStatus,
@@ -43,7 +42,7 @@ interface RecordCardProps {
   isOpen?: boolean;
   onToggle?: () => void;
   values: RecordCardValues;
-  customReasons: string[];
+  reasonOptions: string[];
   onPatch: (patch: {
     status?: StudyStatus;
     missReasons?: string[];
@@ -52,7 +51,10 @@ interface RecordCardProps {
     answerEntries?: AnswerEntry[];
     memo?: string;
   }) => Promise<void> | void;
-  onAddCustomReason: (reason: string) => Promise<void> | void;
+  onSaveReasonOptions: (
+    nextReasons: string[],
+    renameMap: Record<string, string>,
+  ) => Promise<void> | void;
 }
 
 const STATUS_ORDER: StudyStatus[] = ['none', 'review', 'weak', 'done'];
@@ -108,9 +110,9 @@ export function RecordCard({
   isOpen,
   onToggle,
   values,
-  customReasons,
+  reasonOptions,
   onPatch,
-  onAddCustomReason,
+  onSaveReasonOptions,
 }: RecordCardProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const detailsOpen = isOpen !== undefined ? isOpen : internalOpen;
@@ -128,8 +130,10 @@ export function RecordCard({
   const [editingHints, setEditingHints] = useState(false);
   const [hintDrafts, setHintDrafts] = useState<string[]>([]);
 
-  const [addingReason, setAddingReason] = useState(false);
-  const [reasonDraft, setReasonDraft] = useState('');
+  const [editingReasons, setEditingReasons] = useState(false);
+  const [reasonDrafts, setReasonDrafts] = useState<
+    Array<{ original: string | null; value: string }>
+  >([]);
 
   const [memoDraft, setMemoDraft] = useState(values.memo);
 
@@ -168,6 +172,8 @@ export function RecordCard({
     setEditingAnswer(false);
     setEditingHints(false);
     setHintDrafts([]);
+    setEditingReasons(false);
+    setReasonDrafts([]);
   }, [recordKey]);
 
   useEffect(() => {
@@ -290,9 +296,7 @@ export function RecordCard({
 
   const showMissReasons = values.status === 'review' || values.status === 'weak';
 
-  const allReasons = Array.from(
-    new Set([...DEFAULT_MISS_REASONS, ...customReasons, ...values.missReasons]),
-  );
+  const allReasons = Array.from(new Set([...reasonOptions, ...values.missReasons]));
 
   const toggleReason = (reason: string) => {
     const exists = values.missReasons.includes(reason);
@@ -302,19 +306,53 @@ export function RecordCard({
     void onPatch({ missReasons: next });
   };
 
-  const handleSaveCustomReason = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = reasonDraft.trim();
-    if (!trimmed) {
-      setAddingReason(false);
+  // Batch Miss Reason Options Editor (applies to workbook & syncs existing tags)
+  const handleToggleEditReasons = () => {
+    if (editingReasons) {
+      setEditingReasons(false);
       return;
     }
-    await onAddCustomReason(trimmed);
-    if (!values.missReasons.includes(trimmed)) {
-      await onPatch({ missReasons: [...values.missReasons, trimmed] });
+    setReasonDrafts(
+      allReasons.length > 0
+        ? allReasons.map((r) => ({ original: r, value: r }))
+        : [{ original: null, value: '' }],
+    );
+    setEditingReasons(true);
+  };
+
+  const updateReasonDraft = (idx: number, value: string) => {
+    setReasonDrafts((prev) =>
+      prev.map((item, i) => (i === idx ? { ...item, value } : item)),
+    );
+  };
+
+  const addReasonDraftRow = () => {
+    setReasonDrafts((prev) => [...prev, { original: null, value: '' }]);
+  };
+
+  const removeReasonDraftRow = (idx: number) => {
+    setReasonDrafts((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleSaveReasonOptions = () => {
+    const nextReasons: string[] = [];
+    const seen = new Set<string>();
+    const renameMap: Record<string, string> = {};
+
+    for (const draft of reasonDrafts) {
+      const trimmed = draft.value.trim();
+      if (!trimmed) continue;
+      if (!seen.has(trimmed)) {
+        seen.add(trimmed);
+        nextReasons.push(trimmed);
+      }
+      if (draft.original && draft.original !== trimmed) {
+        renameMap[draft.original] = trimmed;
+      }
     }
-    setReasonDraft('');
-    setAddingReason(false);
+
+    void onSaveReasonOptions(nextReasons, renameMap);
+    setEditingReasons(false);
   };
 
   const toggleHintReveal = (idx: number) => {
@@ -449,7 +487,7 @@ export function RecordCard({
   const addDraftSubQuestion = () => {
     setAnswerDraftEntries((prev) => {
       if (prev.length === 0) {
-        return [{ label: '(1)', items: [{ text: '', latex: false }] }];
+        return [{ items: [{ text: '', latex: false }] }];
       }
       const lastEntry = prev[prev.length - 1];
       const lastLatex = lastEntry?.items[lastEntry.items.length - 1]?.latex ?? false;
@@ -468,12 +506,7 @@ export function RecordCard({
   };
 
   const removeDraftSubQuestion = (entryIdx: number) => {
-    setAnswerDraftEntries((prev) => {
-      if (prev.length <= 1) {
-        return [{ items: [{ text: '', latex: false }] }];
-      }
-      return prev.filter((_, i) => i !== entryIdx);
-    });
+    setAnswerDraftEntries((prev) => prev.filter((_, i) => i !== entryIdx));
   };
 
   const handleSaveAnswer = () => {
@@ -555,61 +588,104 @@ export function RecordCard({
                     <span className="text-xs font-semibold text-base-content/65">
                       ミス原因
                     </span>
-                    {!addingReason && (
-                      <button
-                        type="button"
-                        onClick={() => setAddingReason(true)}
-                        className="h-8 px-2.5 rounded-lg bg-base-200/80 hover:bg-base-200 text-xs font-medium text-base-content/75 hover:text-primary flex items-center gap-1 transition-colors"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        追加
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={handleToggleEditReasons}
+                      className={`h-8 px-2.5 rounded-lg text-xs font-medium text-primary flex items-center gap-1 transition-colors ${
+                        editingReasons
+                          ? 'bg-primary/20'
+                          : 'bg-primary/10 hover:bg-primary/18'
+                      }`}
+                    >
+                      {allReasons.length > 0 ? (
+                        <>
+                          <Pencil className="w-3.5 h-3.5" />
+                          編集
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="w-3.5 h-3.5" />
+                          追加
+                        </>
+                      )}
+                    </button>
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {allReasons.map((reason) => {
-                      const selected = values.missReasons.includes(reason);
-                      return (
-                        <button
-                          key={reason}
-                          type="button"
-                          onClick={() => toggleReason(reason)}
-                          className={`h-8 px-3 rounded-full text-xs font-medium border transition-colors ${
-                            selected
-                              ? 'bg-primary text-primary-content border-primary'
-                              : 'bg-base-200/70 text-base-content/75 border-base-300 hover:bg-base-200'
-                          }`}
+
+                  {editingReasons ? (
+                    <div className="space-y-2">
+                      {reasonDrafts.map((draft, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-center gap-1.5 rounded-xl border border-base-300 bg-base-200/40 p-2"
                         >
-                          {reason}
+                          <input
+                            type="text"
+                            autoFocus={idx === reasonDrafts.length - 1 && draft.original === null}
+                            value={draft.value}
+                            onChange={(e) => updateReasonDraft(idx, e.target.value)}
+                            placeholder="原因名"
+                            className="flex-1 h-9 px-3 rounded-lg border border-base-300 bg-base-100 text-sm focus:outline-none focus:border-primary"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeReasonDraftRow(idx)}
+                            className="w-8 h-9 rounded-lg flex items-center justify-center text-base-content/55 hover:text-error hover:bg-error/10 shrink-0 transition-colors"
+                            title="原因を削除"
+                            aria-label="原因を削除"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+
+                      <div className="flex items-center justify-between gap-2 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={addReasonDraftRow}
+                          className="h-8 px-2.5 rounded-lg bg-base-200/80 hover:bg-base-200 text-xs font-medium text-base-content/75 hover:text-primary inline-flex items-center gap-1 transition-colors"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          原因を追加
                         </button>
-                      );
-                    })}
-                  </div>
-                  {addingReason && (
-                    <form onSubmit={handleSaveCustomReason} className="flex gap-1.5 pt-1">
-                      <input
-                        type="text"
-                        autoFocus
-                        value={reasonDraft}
-                        onChange={(e) => setReasonDraft(e.target.value)}
-                        placeholder="原因名"
-                        className="input input-bordered input-sm flex-1 text-sm"
-                      />
-                      <button type="submit" className="btn btn-primary btn-sm">
-                        追加
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAddingReason(false);
-                          setReasonDraft('');
-                        }}
-                        className="btn btn-ghost btn-sm"
-                      >
-                        取消
-                      </button>
-                    </form>
-                  )}
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setEditingReasons(false)}
+                            className="btn btn-ghost btn-sm"
+                          >
+                            キャンセル
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleSaveReasonOptions}
+                            className="btn btn-primary btn-sm"
+                          >
+                            保存
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : allReasons.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {allReasons.map((reason) => {
+                        const selected = values.missReasons.includes(reason);
+                        return (
+                          <button
+                            key={reason}
+                            type="button"
+                            onClick={() => toggleReason(reason)}
+                            className={`h-8 px-3 rounded-full text-xs font-medium border transition-colors ${
+                              selected
+                                ? 'bg-primary text-primary-content border-primary'
+                                : 'bg-base-200/70 text-base-content/75 border-base-300 hover:bg-base-200'
+                            }`}
+                          >
+                            {reason}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
                 </div>
               )}
 
@@ -766,7 +842,7 @@ export function RecordCard({
                         className="rounded-xl border border-base-300 bg-base-200/40 p-2.5 space-y-2"
                       >
                         {showEditorSubLabels && (
-                          <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
                             <input
                               type="text"
                               value={entry.label ?? ''}
@@ -777,15 +853,6 @@ export function RecordCard({
                               aria-label="小問番号"
                               className="w-24 h-8 px-2.5 rounded-lg border border-base-300 bg-base-100 text-xs font-semibold focus:outline-none focus:border-primary"
                             />
-                            <button
-                              type="button"
-                              onClick={() => removeDraftSubQuestion(entryIdx)}
-                              className="w-8 h-8 rounded-lg flex items-center justify-center text-base-content/55 hover:text-error hover:bg-error/10 transition-colors"
-                              title="小問を削除"
-                              aria-label="小問を削除"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
                           </div>
                         )}
 
@@ -846,14 +913,25 @@ export function RecordCard({
                           ))}
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => addDraftItemToEntry(entryIdx)}
-                          className="h-7 px-2 rounded-lg text-[11px] font-medium text-base-content/65 hover:text-primary hover:bg-base-200 inline-flex items-center gap-1 transition-colors"
-                        >
-                          <Plus className="w-3 h-3" />
-                          回答を追加
-                        </button>
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => addDraftItemToEntry(entryIdx)}
+                            className="h-7 px-2 rounded-lg text-[11px] font-medium text-base-content/65 hover:text-primary hover:bg-base-200 inline-flex items-center gap-1 transition-colors"
+                          >
+                            <Plus className="w-3 h-3" />
+                            回答を追加
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeDraftSubQuestion(entryIdx)}
+                            className="w-8 h-8 rounded-lg flex items-center justify-center text-base-content/55 hover:text-error hover:bg-error/10 transition-colors"
+                            title={showEditorSubLabels ? '小問を削除' : '答えを削除'}
+                            aria-label={showEditorSubLabels ? '小問を削除' : '答えを削除'}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     ))}
 
@@ -864,7 +942,7 @@ export function RecordCard({
                         className="h-8 px-2.5 rounded-lg bg-base-200/80 hover:bg-base-200 text-xs font-medium text-base-content/75 hover:text-primary inline-flex items-center gap-1 transition-colors"
                       >
                         <Plus className="w-3.5 h-3.5" />
-                        小問を追加
+                        {answerDraftEntries.length === 0 ? '答えを追加' : '小問を追加'}
                       </button>
                       <div className="flex items-center gap-1.5">
                         <button

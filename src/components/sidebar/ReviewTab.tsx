@@ -1,6 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  DEFAULT_MISS_REASONS,
   STUDY_STATUS_META,
   type PageState,
   type Problem,
@@ -11,7 +10,7 @@ import { getSpreadLayout, useViewerStore } from '../../stores/useViewerStore';
 interface ReviewTabProps {
   pageStates: PageState[];
   problems: Problem[];
-  customReasons: string[];
+  reasonOptions: string[];
 }
 
 interface ReviewItem {
@@ -40,7 +39,7 @@ const STATUS_FILTER_META: Record<StatusFilter, { label: string; activeClass: str
   },
 };
 
-export function ReviewTab({ pageStates, problems, customReasons }: ReviewTabProps) {
+export function ReviewTab({ pageStates, problems, reasonOptions }: ReviewTabProps) {
   const {
     currentPage,
     pageCount,
@@ -95,14 +94,20 @@ export function ReviewTab({ pageStates, problems, customReasons }: ReviewTabProp
     return items.sort((a, b) => a.pageNumber - b.pageNumber);
   }, [problems, pageStates]);
 
-  // Always show all known miss reasons regardless of whether any review item matches them
+  // Always show all workbook miss reasons regardless of whether any review item matches them
   const allReasons = useMemo(() => {
-    const set = new Set<string>([...DEFAULT_MISS_REASONS, ...customReasons]);
+    const set = new Set<string>(reasonOptions);
     for (const item of allItems) {
       for (const r of item.missReasons) set.add(r);
     }
     return Array.from(set);
-  }, [customReasons, allItems]);
+  }, [reasonOptions, allItems]);
+
+  useEffect(() => {
+    if (reasonFilter !== 'all' && !allReasons.includes(reasonFilter)) {
+      setReasonFilter('all');
+    }
+  }, [reasonFilter, allReasons]);
 
   const filtered = useMemo(
     () =>

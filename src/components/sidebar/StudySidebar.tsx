@@ -1,6 +1,12 @@
 import { forwardRef, useImperativeHandle, useRef } from 'react';
 import { PanelRight, X } from 'lucide-react';
-import type { PageState, Problem, UnitNode, Workbook } from '../../types/models';
+import {
+  resolveWorkbookMissReasons,
+  type PageState,
+  type Problem,
+  type UnitNode,
+  type Workbook,
+} from '../../types/models';
 import { useViewerStore, type SidebarTab } from '../../stores/useViewerStore';
 import { RecordTab } from './RecordTab';
 import { TocTab } from './TocTab';
@@ -170,7 +176,7 @@ export const StudySidebar = forwardRef<StudySidebarHandle, StudySidebarProps>(fu
                 <ReviewTab
                   pageStates={pageStates}
                   problems={problems}
-                  customReasons={workbook.customReasons}
+                  reasonOptions={resolveWorkbookMissReasons(workbook)}
                 />
               </div>
             </div>

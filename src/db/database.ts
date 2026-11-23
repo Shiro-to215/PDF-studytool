@@ -1,16 +1,17 @@
 import Dexie, { type Table } from 'dexie';
-import type {
-  BindingDirection,
-  MissHistoryEntry,
-  PageState,
-  PageStrokes,
-  PdfFileRecord,
-  Problem,
-  SpreadMode,
-  Stroke,
-  StudyStatus,
-  UnitNode,
-  Workbook,
+import {
+  DEFAULT_MISS_REASONS,
+  type BindingDirection,
+  type MissHistoryEntry,
+  type PageState,
+  type PageStrokes,
+  type PdfFileRecord,
+  type Problem,
+  type SpreadMode,
+  type Stroke,
+  type StudyStatus,
+  type UnitNode,
+  type Workbook,
 } from '../types/models';
 import { ensurePdfWorker, pdfjsLib } from '../utils/pdfWorker';
 
@@ -136,6 +137,7 @@ export async function addWorkbook(input: CreateWorkbookInput): Promise<Workbook>
     coverSinglePage: input.coverSinglePage ?? false,
     layers: ['1周目'],
     customReasons: [],
+    missReasonOptions: [...DEFAULT_MISS_REASONS],
     lastPage: 1,
     createdAt: now,
     updatedAt: now,
@@ -364,12 +366,67 @@ export async function addWorkbookLayer(workbookId: string, layerName: string): P
   return nextLayers;
 }
 
-export async function addCustomMissReason(workbookId: string, reason: string): Promise<string[]> {
-  const trimmed = reason.trim();
-  const wb = await db.workbooks.get(workbookId);
-  if (!wb || !trimmed) return wb?.customReasons ?? [];
-  if (wb.customReasons.includes(trimmed)) return wb.customReasons;
-  const nextReasons = [...wb.customReasons, trimmed];
-  await db.workbooks.update(workbookId, { customReasons: nextReasons, updatedAt: Date.now() });
-  return nextReasons;
+export async function updateWorkbookMissReasons(
+  workbookId: string,
+  nextReasons: string[],
+  renameMap: Record<string, string> = {},
+): Promise<string[]> {
+  const cleaned = Array.from(
+    new Set(nextReasons.map((r) => r.trim()).filter(Boolean)),
+  );
+  const validSet = new Set(cleaned);
+  const now = Date.now();
+
+  const transformReasons = (current: string[]): string[] => {
+    const mapped: string[] = [];
+    const seen = new Set<string>();
+    for (const r of current) {
+      const next = renameMap[r] ?? r;
+      if (validSet.has(next) && !seen.has(next)) {
+        seen.add(next);
+        mapped.push(next);
+      }
+    }
+    return mapped;
+  };
+
+  await db.transaction(
+    'rw',
+    [db.workbooks, db.problems, db.pageStates],
+    async () => {
+      await db.workbooks.update(workbookId, {
+        missReasonOptions: cleaned,
+        customReasons: [],
+        updatedAt: now,
+      });
+
+      const problems = await db.problems.where('workbookId').equals(workbookId).toArray();
+      const updatedProblems: Problem[] = [];
+      for (const p of problems) {
+        if (p.missReasons.length === 0) continue;
+        const next = transformReasons(p.missReasons);
+        if (!sameStringArray(p.missReasons, next)) {
+          updatedProblems.push({ ...p, missReasons: next, updatedAt: now });
+        }
+      }
+      if (updatedProblems.length > 0) {
+        await db.problems.bulkPut(updatedProblems);
+      }
+
+      const states = await db.pageStates.where('workbookId').equals(workbookId).toArray();
+      const updatedStates: PageState[] = [];
+      for (const s of states) {
+        if (s.missReasons.length === 0) continue;
+        const next = transformReasons(s.missReasons);
+        if (!sameStringArray(s.missReasons, next)) {
+          updatedStates.push({ ...s, missReasons: next, updatedAt: now });
+        }
+      }
+      if (updatedStates.length > 0) {
+        await db.pageStates.bulkPut(updatedStates);
+      }
+    },
+  );
+
+  return cleaned;
 }

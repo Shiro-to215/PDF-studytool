@@ -33,7 +33,10 @@ export interface Workbook {
   defaultSpread: SpreadMode;
   coverSinglePage: boolean;
   layers: string[];
+  /** Legacy custom-only reasons kept for backwards compatibility */
   customReasons: string[];
+  /** Full editable miss-reason tag list for this workbook (overrides defaults when present) */
+  missReasonOptions?: string[];
   lastPage: number;
   createdAt: number;
   updatedAt: number;
@@ -114,6 +117,15 @@ export const DEFAULT_MISS_REASONS = [
   '読解ミス',
   '時間不足',
 ] as const;
+
+export function resolveWorkbookMissReasons(
+  workbook: Pick<Workbook, 'missReasonOptions' | 'customReasons'>,
+): string[] {
+  if (workbook.missReasonOptions !== undefined) {
+    return workbook.missReasonOptions;
+  }
+  return Array.from(new Set([...DEFAULT_MISS_REASONS, ...(workbook.customReasons ?? [])]));
+}
 
 export const STUDY_STATUS_META: Record<
   StudyStatus,
