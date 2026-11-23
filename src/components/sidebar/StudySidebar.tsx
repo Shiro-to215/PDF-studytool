@@ -176,6 +176,7 @@ export const StudySidebar = forwardRef<StudySidebarHandle, StudySidebarProps>(fu
                 <ReviewTab
                   pageStates={pageStates}
                   problems={problems}
+                  unitNodes={unitNodes}
                   reasonOptions={resolveWorkbookMissReasons(workbook)}
                 />
               </div>

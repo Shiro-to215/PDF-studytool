@@ -66,6 +66,7 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
     tocUnitId,
     setCurrentPage,
     setTocUnitId,
+    openRecordItem,
   } = useViewerStore();
 
   const visiblePageSet = useMemo(() => {
@@ -293,9 +294,14 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
   const displayedUnits = childrenByParent.get(activeUnitId) ?? [];
   const displayedProblems = problemsByUnit.get(activeUnitId) ?? [];
 
-  // Stay on the TOC tab & current hierarchy when jumping to a problem page
+  // 1st tap on another page: jump to page & stay on TOC tab & current hierarchy
+  // Tap on a problem already in the current spread: switch to Record tab & expand it
   const handleSelectProblem = (prob: Problem) => {
-    setCurrentPage(prob.pageNumber, { syncToc: false });
+    if (visiblePageSet.has(prob.pageNumber)) {
+      openRecordItem(`prob:${prob.id}`);
+    } else {
+      setCurrentPage(prob.pageNumber, { syncToc: false });
+    }
   };
 
   if (unitNodes.length === 0 && problems.length === 0) {
@@ -471,9 +477,13 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
                     data-toc-item
                     onClick={() => handleSelectProblem(prob)}
                     title={`${prob.numberLabel}（P.${prob.pageNumber}）`}
-                    className={`h-11 px-3 rounded-xl border flex items-center gap-2 min-w-0 transition-all active:scale-[0.98] ${
+                    className={`h-11 pr-3 rounded-xl border flex items-center gap-2 min-w-0 transition-all active:scale-[0.98] ${
                       TILE_STATUS_CLASS[prob.status]
-                    } ${isCurrent ? 'ring-2 ring-primary ring-offset-1 ring-offset-base-100' : ''}`}
+                    } ${
+                      isCurrent
+                        ? 'pl-[9px] border-l-[4px] border-l-primary'
+                        : 'pl-3'
+                    }`}
                   >
                     <span
                       className={`w-2 h-2 rounded-full shrink-0 ${
