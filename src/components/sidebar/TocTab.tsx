@@ -25,14 +25,11 @@ interface TocTabProps {
   onOpenImport: () => void;
 }
 
-const TILE_STATUS_CLASS: Record<StudyStatus, string> = {
-  none: 'bg-base-100 border-base-300 text-base-content/85 hover:bg-base-200/70',
-  review:
-    'bg-amber-500/10 border-amber-500/35 text-amber-900 dark:text-amber-200 hover:bg-amber-500/18',
-  weak:
-    'bg-rose-500/10 border-rose-500/35 text-rose-900 dark:text-rose-200 hover:bg-rose-500/18',
-  done:
-    'bg-emerald-500/10 border-emerald-500/35 text-emerald-900 dark:text-emerald-200 hover:bg-emerald-500/18',
+const STATUS_HALO_CLASS: Record<StudyStatus, string> = {
+  none: 'bg-base-content/10',
+  review: 'bg-amber-500/20',
+  weak: 'bg-rose-500/18',
+  done: 'bg-emerald-500/18',
 };
 
 function visualLabelWidth(label: string): number {
@@ -477,19 +474,23 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
                     data-toc-item
                     onClick={() => handleSelectProblem(prob)}
                     title={`${prob.numberLabel}（P.${prob.pageNumber}）`}
-                    className={`h-11 pr-3 rounded-xl border flex items-center gap-2 min-w-0 transition-all active:scale-[0.98] ${
-                      TILE_STATUS_CLASS[prob.status]
-                    } ${
+                    className={`h-11 px-3 rounded-xl border flex items-center gap-2 min-w-0 text-base-content transition-colors active:scale-[0.98] ${
                       isCurrent
-                        ? 'pl-[9px] border-l-[4px] border-l-primary'
-                        : 'pl-3'
+                        ? 'border-primary/45 bg-primary/[0.04] hover:bg-primary/[0.08]'
+                        : 'border-base-300 bg-base-100 hover:bg-base-200/60'
                     }`}
                   >
                     <span
-                      className={`w-2 h-2 rounded-full shrink-0 ${
-                        STUDY_STATUS_META[prob.status].dotClass
+                      className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
+                        STATUS_HALO_CLASS[prob.status]
                       }`}
-                    />
+                    >
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          STUDY_STATUS_META[prob.status].dotClass
+                        }`}
+                      />
+                    </span>
                     <span className="text-sm font-medium truncate">{prob.numberLabel}</span>
                   </button>
                 );
