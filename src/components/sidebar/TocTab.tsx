@@ -290,6 +290,12 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
 
   const displayedUnits = childrenByParent.get(activeUnitId) ?? [];
   const displayedProblems = problemsByUnit.get(activeUnitId) ?? [];
+  const totalDoneCount = useMemo(
+    () => problems.filter((p) => p.status === 'done').length,
+    [problems],
+  );
+  const totalProgressPct =
+    problems.length > 0 ? Math.round((totalDoneCount / problems.length) * 100) : 0;
 
   // 1st tap on another page: jump to page & stay on TOC tab & current hierarchy
   // Tap on a problem already in the current spread: switch to Record tab & expand it
@@ -327,23 +333,28 @@ export function TocTab({ unitNodes, problems, onOpenImport }: TocTabProps) {
 
   return (
     <div ref={containerRef} className="flex-1 flex flex-col overflow-hidden">
-      {/* Top Bar: Root summary OR Spacious Drill-down back + breadcrumb */}
+      {/* Top Bar: Overall Progress OR Spacious Drill-down back + breadcrumb */}
       {activeUnit === null ? (
         <div
           data-toc-header
-          className="px-4 py-3.5 border-b border-base-300 flex items-center justify-between shrink-0"
+          className="px-4 py-3.5 border-b border-base-300 space-y-2 shrink-0 bg-base-100"
         >
-          <span className="text-sm font-semibold text-base-content/70">
-            全 {problems.length} 問
-          </span>
-          <button
-            type="button"
-            onClick={onOpenImport}
-            className="text-sm text-primary hover:underline flex items-center gap-1.5 font-medium"
-          >
-            <FileSpreadsheet className="w-4 h-4" />
-            追加インポート
-          </button>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-base-content/65">
+              全体の進捗
+            </span>
+            <span className="text-sm font-mono font-semibold text-base-content/80 bg-base-200/80 px-2.5 py-1 rounded-xl">
+              {totalDoneCount} / {problems.length}
+            </span>
+          </div>
+          {problems.length > 0 && (
+            <div className="h-1.5 rounded-full bg-base-200 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-emerald-500/75 transition-all duration-300"
+                style={{ width: `${totalProgressPct}%` }}
+              />
+            </div>
+          )}
         </div>
       ) : (
         <div

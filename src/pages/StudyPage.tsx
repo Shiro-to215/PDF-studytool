@@ -350,7 +350,7 @@ export function StudyPage({ workbookId }: StudyPageProps) {
           ref={stageContainerRef}
           className="relative flex-1 min-h-0 flex flex-col overflow-hidden"
         >
-          <TopBar workbook={workbook} />
+          <TopBar workbook={workbook} onOpenImport={() => setImportOpen(true)} />
 
           {pdfError ? (
             <div className="flex-1 flex items-center justify-center p-6 text-center">

@@ -103,6 +103,7 @@ interface ViewerStore {
   zoomResetSeq: number;
   sidebarOpen: boolean;
   sidebarTab: SidebarTab;
+  showPageTurnButtons: boolean;
   tocUnitId: string | null;
   pageNavSeq: number;
   requestedRecordKey: string | null;
@@ -128,8 +129,22 @@ interface ViewerStore {
   setSidebarOpen: (open: boolean) => void;
   toggleSidebar: () => void;
   setSidebarTab: (tab: SidebarTab) => void;
+  togglePageTurnButtons: () => void;
   setTocUnitId: (unitId: string | null) => void;
   openRecordItem: (recordKey: string) => void;
+}
+
+const PAGE_TURN_BTN_STORAGE_KEY = 'paperwork-show-page-turn-buttons';
+
+function loadShowPageTurnButtons(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    const raw = window.localStorage.getItem(PAGE_TURN_BTN_STORAGE_KEY);
+    if (raw === 'false') return false;
+    return true;
+  } catch {
+    return true;
+  }
 }
 
 export const useViewerStore = create<ViewerStore>((set, get) => ({
@@ -145,6 +160,7 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
   zoomResetSeq: 0,
   sidebarOpen: true,
   sidebarTab: 'record',
+  showPageTurnButtons: loadShowPageTurnButtons(),
   tocUnitId: null,
   pageNavSeq: 0,
   requestedRecordKey: null,
@@ -225,6 +241,16 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarTab: (sidebarTab) => set({ sidebarTab, sidebarOpen: true }),
+  togglePageTurnButtons: () =>
+    set((s) => {
+      const next = !s.showPageTurnButtons;
+      try {
+        window.localStorage.setItem(PAGE_TURN_BTN_STORAGE_KEY, String(next));
+      } catch {
+        // ignore storage errors
+      }
+      return { showPageTurnButtons: next };
+    }),
   setTocUnitId: (tocUnitId) => set({ tocUnitId }),
   openRecordItem: (recordKey) =>
     set((s) => ({

@@ -133,6 +133,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       spreadMode,
       bindingDirection,
       coverSinglePage,
+      showPageTurnButtons,
       zoomResetSeq,
       setCurrentPage,
       setZoomPan,
@@ -1497,8 +1498,10 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       p !== null ? draftStrokesByPage[p] : undefined;
 
     const leftArrowIsPrev = bindingDirection === 'ltr';
-    const canGoLeft = leftArrowIsPrev ? prevTargetPage !== null : nextTargetPage !== null;
-    const canGoRight = leftArrowIsPrev ? nextTargetPage !== null : prevTargetPage !== null;
+    const canGoLeft =
+      showPageTurnButtons && (leftArrowIsPrev ? prevTargetPage !== null : nextTargetPage !== null);
+    const canGoRight =
+      showPageTurnButtons && (leftArrowIsPrev ? nextTargetPage !== null : prevTargetPage !== null);
 
     // Ensure a newly mounted right arrow button immediately inherits the live sidebar offset
     useLayoutEffect(() => {
