@@ -100,15 +100,22 @@
   );
 }
 
-/* Spoiler blur for hints and compact answers */
+/* Spoiler blur for hints and compact answers (isolated GPU layer avoids WebKit blur edge artifacts) */
 .spoiler-blur {
+  -webkit-filter: blur(6px);
   filter: blur(6px);
   user-select: none;
+  transform: translateZ(0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  isolation: isolate;
   transition: filter 180ms ease, opacity 180ms ease;
 }
 
 .spoiler-blur.revealed {
-  filter: blur(0);
+  -webkit-filter: none;
+  filter: none;
+  transform: none;
 }
 
 /* Thin subtle scrollbar */
@@ -157,11 +164,38 @@
 
 /* KaTeX typography polish for narrow sidebar */
 .katex {
-  font-size: 1.02em;
+  font-size: 1.14em;
+  white-space: nowrap;
 }
 
 .katex-display {
   margin: 0;
+}
+
+/* Horizontal math scroll: clean hidden bar on touch (iPad), subtle thin bar on mouse (PC) */
+.math-scroll {
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.math-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .math-scroll {
+    scrollbar-width: thin;
+  }
+  .math-scroll::-webkit-scrollbar {
+    display: block;
+    height: 4px;
+  }
+  .math-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .math-scroll::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, currentColor 18%, transparent);
+    border-radius: 9999px;
+  }
 }
 
 /* Smooth CSS Grid accordion expand / collapse for RecordCard */

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { PageState, Problem, Workbook } from '../../types/models';
 import {
   addCustomMissReason,
@@ -41,6 +41,17 @@ export function RecordTab({
     return Array.from(new Set(pages)).sort((a, b) => a - b);
   }, [layout.pages, currentPage]);
 
+  // Allow only one RecordCard expanded at a time (auto-collapse others)
+  const [openRecordKey, setOpenRecordKey] = useState<string | null>(null);
+  const visiblePagesKey = visiblePages.join(',');
+  useEffect(() => {
+    setOpenRecordKey(null);
+  }, [visiblePagesKey, workbook.id]);
+
+  const handleToggleCard = (key: string) => {
+    setOpenRecordKey((prev) => (prev === key ? null : key));
+  };
+
   const pageStateMap = useMemo(
     () => new Map(pageStates.map((s) => [s.pageNumber, s])),
     [pageStates],
@@ -64,35 +75,43 @@ export function RecordTab({
       {visiblePages.flatMap((pageNum) => {
         const pageProblems = problemsByPage.get(pageNum) ?? [];
         if (pageProblems.length > 0) {
-          return pageProblems.map((prob) => (
-            <RecordCard
-              key={`prob:${prob.id}`}
-              recordKey={`prob:${prob.id}`}
-              values={{
-                title: prob.numberLabel,
-                status: prob.status,
-                missReasons: prob.missReasons,
-                hints: prob.hints,
-                compactAnswer: prob.compactAnswer,
-                answerEntries: prob.answerEntries,
-                memo: prob.memo,
-              }}
-              customReasons={workbook.customReasons}
-              onPatch={(patch) => {
-                void upsertProblem(prob.id, patch);
-              }}
-              onAddCustomReason={(reason) => {
-                void addCustomMissReason(workbook.id, reason);
-              }}
-            />
-          ));
+          return pageProblems.map((prob) => {
+            const cardKey = `prob:${prob.id}`;
+            return (
+              <RecordCard
+                key={cardKey}
+                recordKey={cardKey}
+                isOpen={openRecordKey === cardKey}
+                onToggle={() => handleToggleCard(cardKey)}
+                values={{
+                  title: prob.numberLabel,
+                  status: prob.status,
+                  missReasons: prob.missReasons,
+                  hints: prob.hints,
+                  compactAnswer: prob.compactAnswer,
+                  answerEntries: prob.answerEntries,
+                  memo: prob.memo,
+                }}
+                customReasons={workbook.customReasons}
+                onPatch={(patch) => {
+                  void upsertProblem(prob.id, patch);
+                }}
+                onAddCustomReason={(reason) => {
+                  void addCustomMissReason(workbook.id, reason);
+                }}
+              />
+            );
+          });
         }
 
         const pageState = pageStateMap.get(pageNum);
+        const pageKey = `page:${workbook.id}:${pageNum}`;
         return [
           <RecordCard
-            key={`page:${workbook.id}:${pageNum}`}
-            recordKey={`page:${workbook.id}:${pageNum}`}
+            key={pageKey}
+            recordKey={pageKey}
+            isOpen={openRecordKey === pageKey}
+            onToggle={() => handleToggleCard(pageKey)}
             values={{
               title: `P.${pageNum}`,
               status: pageState?.status ?? 'none',

@@ -8,8 +8,6 @@ import {
 } from 'react';
 import {
   ChevronRight,
-  Eye,
-  EyeOff,
   Lightbulb,
   Pencil,
   Plus,
@@ -42,6 +40,8 @@ export interface RecordCardValues {
 
 interface RecordCardProps {
   recordKey: string;
+  isOpen?: boolean;
+  onToggle?: () => void;
   values: RecordCardValues;
   customReasons: string[];
   onPatch: (patch: {
@@ -105,23 +105,28 @@ function cloneAnswerEntries(entries: AnswerEntry[]): AnswerEntry[] {
 
 export function RecordCard({
   recordKey,
+  isOpen,
+  onToggle,
   values,
   customReasons,
   onPatch,
   onAddCustomReason,
 }: RecordCardProps) {
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const [renderBody, setRenderBody] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const detailsOpen = isOpen !== undefined ? isOpen : internalOpen;
+  const [renderBody, setRenderBody] = useState(detailsOpen);
+
+  if (detailsOpen && !renderBody) {
+    setRenderBody(true);
+  }
 
   const [revealedHints, setRevealedHints] = useState<Set<number>>(new Set());
   const [revealedAnswers, setRevealedAnswers] = useState<Set<number>>(new Set());
   const [editingAnswer, setEditingAnswer] = useState(false);
   const [answerDraftEntries, setAnswerDraftEntries] = useState<AnswerEntry[]>([]);
 
-  const [addingHint, setAddingHint] = useState(false);
-  const [hintDraft, setHintDraft] = useState('');
-  const [editingHintIdx, setEditingHintIdx] = useState<number | null>(null);
-  const [editingHintDraft, setEditingHintDraft] = useState('');
+  const [editingHints, setEditingHints] = useState(false);
+  const [hintDrafts, setHintDrafts] = useState<string[]>([]);
 
   const [addingReason, setAddingReason] = useState(false);
   const [reasonDraft, setReasonDraft] = useState('');
@@ -156,15 +161,13 @@ export function RecordCard({
   // Reset accordion, spoilers and sync local drafts when target changes
   useEffect(() => {
     cancelAccordionMotion();
-    setDetailsOpen(false);
+    setInternalOpen(false);
     setRenderBody(false);
     setRevealedHints(new Set());
     setRevealedAnswers(new Set());
     setEditingAnswer(false);
-    setAddingHint(false);
-    setHintDraft('');
-    setEditingHintIdx(null);
-    setEditingHintDraft('');
+    setEditingHints(false);
+    setHintDrafts([]);
   }, [recordKey]);
 
   useEffect(() => {
@@ -269,15 +272,19 @@ export function RecordCard({
   }, [detailsOpen, renderBody]);
 
   const handleToggleOpen = () => {
+    if (onToggle) {
+      onToggle();
+      return;
+    }
     if (detailsOpen) {
-      setDetailsOpen(false);
+      setInternalOpen(false);
     } else {
       if (closeTimerRef.current !== null) {
         window.clearTimeout(closeTimerRef.current);
         closeTimerRef.current = null;
       }
       setRenderBody(true);
-      setDetailsOpen(true);
+      setInternalOpen(true);
     }
   };
 
@@ -319,63 +326,42 @@ export function RecordCard({
     });
   };
 
-  const handleAddHint = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = hintDraft.trim();
-    if (!trimmed) {
-      setAddingHint(false);
+  // Batch Hint Editor actions
+  const handleToggleEditHints = () => {
+    if (editingHints) {
+      setEditingHints(false);
       return;
     }
-    void onPatch({ hints: [...values.hints, trimmed] });
-    setHintDraft('');
-    setAddingHint(false);
+    setHintDrafts(values.hints.length > 0 ? [...values.hints] : ['']);
+    setEditingHints(true);
   };
 
-  const handleStartEditHint = (idx: number) => {
-    setAddingHint(false);
-    setEditingHintIdx(idx);
-    setEditingHintDraft(values.hints[idx] ?? '');
+  const updateHintDraft = (idx: number, text: string) => {
+    setHintDrafts((prev) => prev.map((h, i) => (i === idx ? text : h)));
   };
 
-  const handleSaveEditHint = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (editingHintIdx === null) return;
-    const trimmed = editingHintDraft.trim();
-    if (!trimmed) {
-      setEditingHintIdx(null);
-      setEditingHintDraft('');
-      return;
-    }
-    const next = values.hints.map((h, i) => (i === editingHintIdx ? trimmed : h));
-    void onPatch({ hints: next });
-    setEditingHintIdx(null);
-    setEditingHintDraft('');
+  const addHintDraftRow = () => {
+    setHintDrafts((prev) => [...prev, '']);
   };
 
-  const handleDeleteHint = (idx: number) => {
-    const next = values.hints.filter((_, i) => i !== idx);
+  const removeHintDraftRow = (idx: number) => {
+    setHintDrafts((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleSaveHints = () => {
+    const cleaned = hintDrafts.map((h) => h.trim()).filter(Boolean);
     setRevealedHints((prev) => {
-      const updated = new Set<number>();
+      const next = new Set<number>();
       for (const i of prev) {
-        if (i < idx) updated.add(i);
-        else if (i > idx) updated.add(i - 1);
+        if (i < cleaned.length) next.add(i);
       }
-      return updated;
+      return next;
     });
-    if (editingHintIdx === idx) {
-      setEditingHintIdx(null);
-      setEditingHintDraft('');
-    } else if (editingHintIdx !== null && editingHintIdx > idx) {
-      setEditingHintIdx(editingHintIdx - 1);
-    }
-    void onPatch({ hints: next });
+    void onPatch({ hints: cleaned });
+    setEditingHints(false);
   };
 
-  // Answer reveal controls (per-sub-question + toggle all)
-  const allAnswersRevealed =
-    resolvedAnswers.length > 0 &&
-    resolvedAnswers.every((_, idx) => revealedAnswers.has(idx));
-
+  // Answer reveal control (tap individual card to toggle blur)
   const toggleAnswerReveal = (idx: number) => {
     setRevealedAnswers((prev) => {
       const next = new Set(prev);
@@ -383,14 +369,6 @@ export function RecordCard({
       else next.add(idx);
       return next;
     });
-  };
-
-  const toggleAllAnswersReveal = () => {
-    if (allAnswersRevealed) {
-      setRevealedAnswers(new Set());
-    } else {
-      setRevealedAnswers(new Set(resolvedAnswers.map((_, idx) => idx)));
-    }
   };
 
   // Structured Answer Editor actions
@@ -642,141 +620,113 @@ export function RecordCard({
                     <Lightbulb className="w-4 h-4" />
                     ヒント
                   </span>
-                  {!addingHint && (
-                    <button
-                      type="button"
-                      onClick={() => setAddingHint(true)}
-                      className="h-8 px-2.5 rounded-lg bg-primary/10 hover:bg-primary/18 text-xs font-medium text-primary flex items-center gap-1 transition-colors"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      追加
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={handleToggleEditHints}
+                    className={`h-8 px-2.5 rounded-lg text-xs font-medium text-primary flex items-center gap-1 transition-colors ${
+                      editingHints
+                        ? 'bg-primary/20'
+                        : 'bg-primary/10 hover:bg-primary/18'
+                    }`}
+                  >
+                    {values.hints.length > 0 ? (
+                      <>
+                        <Pencil className="w-3.5 h-3.5" />
+                        編集
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-3.5 h-3.5" />
+                        追加
+                      </>
+                    )}
+                  </button>
                 </div>
 
-                {values.hints.length > 0 && (
+                {editingHints ? (
+                  <div className="space-y-2.5">
+                    {hintDrafts.map((draft, idx) => (
+                      <div
+                        key={idx}
+                        className="rounded-xl border border-base-300 bg-base-200/40 p-2.5"
+                      >
+                        <div className="flex items-start gap-2">
+                          <span className="shrink-0 w-6 text-xs font-semibold text-base-content/60 pt-2.5 text-center">
+                            {idx + 1}.
+                          </span>
+                          <AutoGrowTextarea
+                            autoFocus={idx === 0}
+                            value={draft}
+                            onChange={(e) => updateHintDraft(idx, e.target.value)}
+                            className="flex-1 bg-base-100"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeHintDraftRow(idx)}
+                            className="w-8 h-[38px] rounded-xl flex items-center justify-center text-base-content/55 hover:text-error hover:bg-error/10 shrink-0 transition-colors"
+                            title="ヒントを削除"
+                            aria-label="ヒントを削除"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+
+                    <div className="flex items-center justify-between gap-2 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={addHintDraftRow}
+                        className="h-8 px-2.5 rounded-lg bg-base-200/80 hover:bg-base-200 text-xs font-medium text-base-content/75 hover:text-primary inline-flex items-center gap-1 transition-colors"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        ヒントを追加
+                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setEditingHints(false)}
+                          className="btn btn-ghost btn-sm"
+                        >
+                          キャンセル
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveHints}
+                          className="btn btn-primary btn-sm"
+                        >
+                          保存
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : values.hints.length > 0 ? (
                   <div className="space-y-2">
                     {values.hints.map((hint, idx) => {
                       const revealed = revealedHints.has(idx);
-                      const isEditing = editingHintIdx === idx;
                       return (
                         <div
                           key={idx}
-                          onClick={!isEditing ? () => toggleHintReveal(idx) : undefined}
-                          className={`rounded-xl border border-base-300 bg-base-200/50 p-3 transition-colors ${
-                            isEditing ? '' : 'cursor-pointer hover:border-base-content/25'
-                          }`}
+                          onClick={() => toggleHintReveal(idx)}
+                          className="overflow-hidden min-h-[48px] rounded-xl border border-base-300 bg-base-200/50 px-3.5 py-2.5 flex flex-col justify-center cursor-pointer hover:border-base-content/25 transition-colors"
                         >
-                          <div className="flex items-center justify-between gap-2 mb-1">
-                            <span className="flex items-center gap-1.5 text-xs font-medium text-base-content/60">
-                              {revealed ? (
-                                <EyeOff className="w-3.5 h-3.5" />
-                              ) : (
-                                <Eye className="w-3.5 h-3.5" />
-                              )}
-                              <span>ヒント {idx + 1}</span>
+                          <div className="flex gap-2.5 items-start">
+                            <span className="shrink-0 w-9 text-xs font-semibold text-base-content/65 leading-relaxed whitespace-nowrap pt-[2px]">
+                              {idx + 1}.
                             </span>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (isEditing) {
-                                    setEditingHintIdx(null);
-                                    setEditingHintDraft('');
-                                  } else {
-                                    handleStartEditHint(idx);
-                                  }
-                                }}
-                                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
-                                  isEditing
-                                    ? 'text-primary bg-primary/15'
-                                    : 'text-base-content/60 hover:text-base-content hover:bg-base-300/70'
-                                }`}
-                                title="ヒントを編集"
-                                aria-label="ヒントを編集"
-                              >
-                                <Pencil className="w-4 h-4" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteHint(idx);
-                                }}
-                                className="w-8 h-8 rounded-lg flex items-center justify-center text-base-content/60 hover:text-error hover:bg-error/10 transition-colors"
-                                title="ヒントを削除"
-                                aria-label="ヒントを削除"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-
-                          {isEditing ? (
-                            <form onSubmit={handleSaveEditHint} className="space-y-2 pt-1">
-                              <AutoGrowTextarea
-                                autoFocus
-                                value={editingHintDraft}
-                                onChange={(e) => setEditingHintDraft(e.target.value)}
-                                className="bg-base-100"
-                              />
-                              <div className="flex justify-end gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setEditingHintIdx(null);
-                                    setEditingHintDraft('');
-                                  }}
-                                  className="btn btn-ghost btn-sm"
-                                >
-                                  キャンセル
-                                </button>
-                                <button type="submit" className="btn btn-primary btn-sm">
-                                  保存
-                                </button>
-                              </div>
-                            </form>
-                          ) : (
                             <p
-                              className={`text-sm leading-relaxed whitespace-pre-wrap spoiler-blur ${
+                              className={`flex-1 min-w-0 text-sm leading-relaxed whitespace-pre-wrap break-words spoiler-blur ${
                                 revealed ? 'revealed' : ''
                               }`}
                             >
                               {hint}
                             </p>
-                          )}
+                          </div>
                         </div>
                       );
                     })}
                   </div>
-                )}
-
-                {addingHint && (
-                  <form onSubmit={handleAddHint} className="space-y-2 pt-1">
-                    <AutoGrowTextarea
-                      autoFocus
-                      value={hintDraft}
-                      onChange={(e) => setHintDraft(e.target.value)}
-                      className="bg-base-100"
-                    />
-                    <div className="flex justify-end gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAddingHint(false);
-                          setHintDraft('');
-                        }}
-                        className="btn btn-ghost btn-sm"
-                      >
-                        キャンセル
-                      </button>
-                      <button type="submit" className="btn btn-primary btn-sm">
-                        保存
-                      </button>
-                    </div>
-                  </form>
-                )}
+                ) : null}
               </div>
 
               {/* Answer (Supports Sub-Questions, Multi-Answer Stacking, and KaTeX) */}
@@ -785,39 +735,27 @@ export function RecordCard({
                   <span className="text-xs font-semibold text-base-content/65">
                     答え
                   </span>
-                  <div className="flex items-center gap-1.5">
-                    {!editingAnswer && resolvedAnswers.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={toggleAllAnswersReveal}
-                        className="h-8 px-2.5 rounded-lg bg-primary/10 hover:bg-primary/18 text-xs font-medium text-primary flex items-center gap-1 transition-colors"
-                      >
-                        {allAnswersRevealed ? (
-                          <>
-                            <EyeOff className="w-3.5 h-3.5" />
-                            隠す
-                          </>
-                        ) : (
-                          <>
-                            <Eye className="w-3.5 h-3.5" />
-                            表示
-                          </>
-                        )}
-                      </button>
+                  <button
+                    type="button"
+                    onClick={handleToggleEditAnswer}
+                    className={`h-8 px-2.5 rounded-lg text-xs font-medium text-primary flex items-center gap-1 transition-colors ${
+                      editingAnswer
+                        ? 'bg-primary/20'
+                        : 'bg-primary/10 hover:bg-primary/18'
+                    }`}
+                  >
+                    {resolvedAnswers.length > 0 ? (
+                      <>
+                        <Pencil className="w-3.5 h-3.5" />
+                        編集
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-3.5 h-3.5" />
+                        追加
+                      </>
                     )}
-                    <button
-                      type="button"
-                      onClick={handleToggleEditAnswer}
-                      className={`h-8 px-2.5 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors ${
-                        editingAnswer
-                          ? 'bg-primary/15 text-primary'
-                          : 'bg-base-200/80 hover:bg-base-200 text-base-content/75 hover:text-base-content'
-                      }`}
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                      編集
-                    </button>
-                  </div>
+                  </button>
                 </div>
 
                 {editingAnswer ? (
@@ -948,50 +886,82 @@ export function RecordCard({
                   </div>
                 ) : resolvedAnswers.length > 0 ? (
                   isSubQuestionMode ? (
-                    <div className="space-y-2">
-                      {resolvedAnswers.map((entry, entryIdx) => {
-                        const revealed = revealedAnswers.has(entryIdx);
-                        const label = entry.label?.trim() || `(${entryIdx + 1})`;
-                        return (
-                          <div
-                            key={entryIdx}
-                            onClick={() => toggleAnswerReveal(entryIdx)}
-                            className="rounded-xl border border-base-300 bg-base-200/50 p-3 cursor-pointer hover:border-base-content/25 transition-colors"
-                          >
-                            <div className="flex items-center justify-between gap-2 mb-1.5">
-                              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-base-content/70">
-                                {revealed ? (
-                                  <EyeOff className="w-3.5 h-3.5 text-base-content/50" />
-                                ) : (
-                                  <Eye className="w-3.5 h-3.5 text-base-content/50" />
+                    (() => {
+                      const hasWideLabel = resolvedAnswers.some((entry, idx) => {
+                        const lbl = entry.label?.trim() || `(${idx + 1})`;
+                        return lbl.length > 4;
+                      });
+                      const labelWidthClass = hasWideLabel ? 'w-14' : 'w-9';
+                      const followIndentClass = hasWideLabel
+                        ? 'pl-[calc(3.5rem+0.625rem)]'
+                        : 'pl-[calc(2.25rem+0.625rem)]';
+                      return (
+                        <div className="space-y-2">
+                          {resolvedAnswers.map((entry, entryIdx) => {
+                            const revealed = revealedAnswers.has(entryIdx);
+                            const label = entry.label?.trim() || `(${entryIdx + 1})`;
+                            const [firstItem, ...restItems] = entry.items;
+                            return (
+                              <div
+                                key={entryIdx}
+                                onClick={() => toggleAnswerReveal(entryIdx)}
+                                className="overflow-hidden min-h-[48px] rounded-xl border border-base-300 bg-base-200/50 px-3.5 py-2.5 flex flex-col justify-center cursor-pointer hover:border-base-content/25 transition-colors"
+                              >
+                                {firstItem && (
+                                  <div
+                                    className={`flex gap-2.5 ${
+                                      firstItem.latex ? 'items-center' : 'items-start'
+                                    }`}
+                                  >
+                                    <span
+                                      className={`shrink-0 ${labelWidthClass} text-xs font-semibold text-base-content/65 leading-relaxed whitespace-nowrap ${
+                                        firstItem.latex ? '' : 'pt-[2px]'
+                                      }`}
+                                    >
+                                      {label}
+                                    </span>
+                                    <div
+                                      className={`flex-1 min-w-0 spoiler-blur ${
+                                        revealed ? 'revealed' : ''
+                                      }`}
+                                    >
+                                      <MathText
+                                        text={firstItem.text}
+                                        latex={firstItem.latex}
+                                        scrollable={revealed}
+                                      />
+                                    </div>
+                                  </div>
                                 )}
-                                <span>{label}</span>
-                              </span>
-                            </div>
-                            <div
-                              className={`spoiler-blur ${revealed ? 'revealed' : ''}`}
-                            >
-                              {entry.items.map((item, itemIdx) => (
-                                <div
-                                  key={itemIdx}
-                                  className={
-                                    itemIdx > 0
-                                      ? 'border-t border-base-300/75 pt-2 mt-2'
-                                      : ''
-                                  }
-                                >
-                                  <MathText text={item.text} latex={item.latex} />
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+
+                                {restItems.length > 0 && (
+                                  <div className={followIndentClass}>
+                                    {restItems.map((item, idx) => (
+                                      <div
+                                        key={idx}
+                                        className={`border-t border-base-300/75 pt-2 mt-2 spoiler-blur ${
+                                          revealed ? 'revealed' : ''
+                                        }`}
+                                      >
+                                        <MathText
+                                          text={item.text}
+                                          latex={item.latex}
+                                          scrollable={revealed}
+                                        />
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()
                   ) : (
                     <div
                       onClick={() => toggleAnswerReveal(0)}
-                      className="p-3 rounded-xl border border-base-300 bg-base-200/50 cursor-pointer hover:border-base-content/25 transition-colors"
+                      className="overflow-hidden min-h-[48px] px-3.5 py-2.5 flex flex-col justify-center rounded-xl border border-base-300 bg-base-200/50 cursor-pointer hover:border-base-content/25 transition-colors"
                     >
                       <div
                         className={`spoiler-blur ${
@@ -1007,7 +977,11 @@ export function RecordCard({
                                 : ''
                             }
                           >
-                            <MathText text={item.text} latex={item.latex} />
+                            <MathText
+                              text={item.text}
+                              latex={item.latex}
+                              scrollable={revealedAnswers.has(0)}
+                            />
                           </div>
                         ))}
                       </div>
