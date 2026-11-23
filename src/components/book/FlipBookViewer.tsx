@@ -392,6 +392,64 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       [stopZoomAnimation, applyZoomDom, setZoomPan, quantizeCommittedScale],
     );
 
+    // When bookW changes due to sidebar settle (open/close) or viewport resize while zoomed,
+    // scale panX/panY by the exact book width ratio so the visual position matches the outer
+    // bookMotionRef scale(s) with 0px drift on both open-end and close-start frames.
+    const prevBookLayoutRef = useRef({ bookW, spread: spreadMode, page: currentPage });
+    useLayoutEffect(() => {
+      const prev = prevBookLayoutRef.current;
+      prevBookLayoutRef.current = { bookW, spread: spreadMode, page: currentPage };
+
+      if (
+        prev.bookW <= 0 ||
+        bookW <= 0 ||
+        prev.bookW === bookW ||
+        prev.spread !== spreadMode ||
+        prev.page !== currentPage
+      ) {
+        return;
+      }
+
+      const cur = liveZoomRef.current;
+      if (cur.scale <= 1.01) return;
+
+      const ratio = bookW / prev.bookW;
+      const nextX = cur.panX * ratio;
+      const nextY = cur.panY * ratio;
+      lastZoomFocusRef.current = {
+        x: lastZoomFocusRef.current.x * ratio,
+        y: lastZoomFocusRef.current.y * ratio,
+      };
+
+      stopZoomAnimation();
+      applyZoomDom(cur.scale, nextX, nextY);
+
+      const nextCommitted = quantizeCommittedScale(cur.scale);
+      if (Math.abs(nextCommitted - committedScaleRef.current) > 0.001) {
+        setCommittedScale(nextCommitted);
+      }
+
+      if (bookW < prev.bookW) {
+        const clamped = clampZoomPan(cur.scale, nextX, nextY, false);
+        if (Math.hypot(clamped.panX - nextX, clamped.panY - nextY) > 1) {
+          animateZoomTo(clamped.scale, clamped.panX, clamped.panY, 180);
+          return;
+        }
+      }
+
+      setZoomPan(cur.scale, nextX, nextY);
+    }, [
+      bookW,
+      spreadMode,
+      currentPage,
+      stopZoomAnimation,
+      applyZoomDom,
+      quantizeCommittedScale,
+      clampZoomPan,
+      animateZoomTo,
+      setZoomPan,
+    ]);
+
     // Keep DOM transform and cursor synced with liveZoomRef across any React re-render
     useLayoutEffect(() => {
       const { scale: s, panX: px, panY: py } = liveZoomRef.current;

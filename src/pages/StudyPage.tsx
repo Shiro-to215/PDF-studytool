@@ -156,7 +156,9 @@ export function StudyPage({ workbookId }: StudyPageProps) {
     if (dist < 0.001) {
       applySidebarSyncFrame(targetT, layoutShift);
       setSettledRightInset(targetT === 1 ? layoutShift : 0);
-      viewerRef.current?.reclampZoom();
+      if (targetT === 0) {
+        viewerRef.current?.reclampZoom();
+      }
       return;
     }
 
@@ -178,7 +180,9 @@ export function StudyPage({ workbookId }: StudyPageProps) {
       } else {
         sidebarAnimRafRef.current = null;
         setSettledRightInset(targetT === 1 ? layoutShift : 0);
-        viewerRef.current?.reclampZoom();
+        if (targetT === 0) {
+          viewerRef.current?.reclampZoom();
+        }
       }
     };
 
