@@ -15,12 +15,14 @@ import { RecordCard } from './RecordCard';
 
 interface RecordTabProps {
   workbook: Workbook;
+  activeRound: string;
   pageStates: PageState[];
   problems: Problem[];
 }
 
 export function RecordTab({
   workbook,
+  activeRound,
   pageStates,
   problems,
 }: RecordTabProps) {
@@ -133,7 +135,7 @@ export function RecordTab({
                   }}
                   reasonOptions={reasonOptions}
                   onPatch={(patch) => {
-                    void upsertProblem(prob.id, patch);
+                    void upsertProblem(prob.id, patch, activeRound);
                   }}
                   onSaveReasonOptions={handleSaveReasonOptions}
                 />
@@ -161,7 +163,7 @@ export function RecordTab({
               }}
               reasonOptions={reasonOptions}
               onPatch={(patch) => {
-                void upsertPageState(workbook.id, pageNum, patch);
+                void upsertPageState(workbook.id, pageNum, patch, activeRound);
               }}
               onSaveReasonOptions={handleSaveReasonOptions}
             />

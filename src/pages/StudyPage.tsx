@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { FileUp } from 'lucide-react';
 import {
@@ -7,14 +7,17 @@ import {
   relinkWorkbookPdf,
   updateWorkbookSettings,
 } from '../db/database';
-import type {
-  PageState,
-  PageStrokes,
-  Problem,
-  UnitNode,
+import {
+  resolveActiveLayer,
+  resolveRoundRecord,
+  type PageState,
+  type PageStrokes,
+  type Problem,
+  type UnitNode,
 } from '../types/models';
 import { PdfDocumentManager } from '../utils/pdfEngine';
 import { getSpreadLayout, useViewerStore } from '../stores/useViewerStore';
+import { useToolStore } from '../stores/useToolStore';
 import { TopBar } from '../components/toolbar/TopBar';
 import {
   FloatingToolPalette,
@@ -104,6 +107,39 @@ export function StudyPage({ workbookId }: StudyPageProps) {
   const sidebarInitializedRef = useRef(false);
 
   const isWorkbookReady = Boolean(workbook);
+  const setActiveLayer = useToolStore((s) => s.setActiveLayer);
+
+  const activeRound = workbook ? resolveActiveLayer(workbook) : '1周目';
+  const firstRound = workbook?.layers[0] ?? '1周目';
+
+  // Keep drawing tool's activeLayer strictly synced to the workbook's active round
+  useEffect(() => {
+    if (!workbook) return;
+    setActiveLayer(activeRound);
+  }, [workbook?.id, activeRound, setActiveLayer]);
+
+  // Project problems & pageStates onto the active round so Record / TOC / Review all reflect it
+  const activeProblems = useMemo(
+    () =>
+      problems.map((p) => {
+        const rec = resolveRoundRecord(p, activeRound, firstRound);
+        return rec.status === p.status && rec.missReasons === p.missReasons
+          ? p
+          : { ...p, status: rec.status, missReasons: rec.missReasons };
+      }),
+    [problems, activeRound, firstRound],
+  );
+
+  const activePageStates = useMemo(
+    () =>
+      pageStates.map((s) => {
+        const rec = resolveRoundRecord(s, activeRound, firstRound);
+        return rec.status === s.status && rec.missReasons === s.missReasons
+          ? s
+          : { ...s, status: rec.status, missReasons: rec.missReasons };
+      }),
+    [pageStates, activeRound, firstRound],
+  );
 
   const getLayoutShift = useCallback(() => {
     const containerW =
@@ -350,7 +386,12 @@ export function StudyPage({ workbookId }: StudyPageProps) {
           ref={stageContainerRef}
           className="relative flex-1 min-h-0 flex flex-col overflow-hidden"
         >
-          <TopBar workbook={workbook} onOpenImport={() => setImportOpen(true)} />
+          <TopBar
+            workbook={workbook}
+            problems={problems}
+            pageStates={pageStates}
+            onOpenImport={() => setImportOpen(true)}
+          />
 
           {pdfError ? (
             <div className="flex-1 flex items-center justify-center p-6 text-center">
@@ -406,9 +447,10 @@ export function StudyPage({ workbookId }: StudyPageProps) {
         <StudySidebar
           ref={sidebarRef}
           workbook={workbook}
-          pageStates={pageStates}
+          activeRound={activeRound}
+          pageStates={activePageStates}
           unitNodes={unitNodes}
-          problems={problems}
+          problems={activeProblems}
           onOpenImport={() => setImportOpen(true)}
         />
       </div>

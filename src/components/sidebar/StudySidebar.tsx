@@ -20,6 +20,7 @@ export interface StudySidebarHandle {
 
 interface StudySidebarProps {
   workbook: Workbook;
+  activeRound: string;
   pageStates: PageState[];
   unitNodes: UnitNode[];
   problems: Problem[];
@@ -33,7 +34,7 @@ const TABS: Array<{ id: SidebarTab; label: string }> = [
 ];
 
 export const StudySidebar = forwardRef<StudySidebarHandle, StudySidebarProps>(function StudySidebar(
-  { workbook, pageStates, unitNodes, problems, onOpenImport },
+  { workbook, activeRound, pageStates, unitNodes, problems, onOpenImport },
   ref,
 ) {
   const { sidebarOpen, sidebarTab, setSidebarTab, setSidebarOpen, toggleSidebar } =
@@ -161,6 +162,7 @@ export const StudySidebar = forwardRef<StudySidebarHandle, StudySidebarProps>(fu
               <div className="w-1/3 h-full shrink-0 flex flex-col overflow-hidden">
                 <RecordTab
                   workbook={workbook}
+                  activeRound={activeRound}
                   pageStates={pageStates}
                   problems={problems}
                 />

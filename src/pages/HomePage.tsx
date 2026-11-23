@@ -28,6 +28,8 @@ import {
   parseImportInput,
 } from '../db/importExport';
 import {
+  resolveActiveLayer,
+  resolveRoundRecord,
   STUDY_STATUS_META,
   type PageState,
   type Problem,
@@ -83,34 +85,43 @@ export function HomePage() {
   const [isDraggingPage, setIsDraggingPage] = useState(false);
   const backupFileRef = useRef<HTMLInputElement | null>(null);
 
-  // Per-workbook stats
+  // Per-workbook stats (scoped to each workbook's active round)
   const statsByWorkbook = useMemo(() => {
     const map = new Map<
       string,
-      { totalTracked: number; done: number; attention: number; percent: number }
+      { totalTracked: number; done: number; attention: number; percent: number; activeRound: string }
     >();
 
     for (const wb of workbooks) {
+      const activeRound = resolveActiveLayer(wb);
+      const firstRound = wb.layers[0] ?? '1周目';
       const wbProblems = problems.filter((p) => p.workbookId === wb.id);
       const wbStates = pageStates.filter((s) => s.workbookId === wb.id);
 
       if (wbProblems.length > 0) {
-        const done = wbProblems.filter((p) => p.status === 'done').length;
-        const attention = wbProblems.filter(
-          (p) => p.status === 'review' || p.status === 'weak',
-        ).length;
+        let done = 0;
+        let attention = 0;
+        for (const p of wbProblems) {
+          const st = resolveRoundRecord(p, activeRound, firstRound).status;
+          if (st === 'done') done++;
+          else if (st === 'review' || st === 'weak') attention++;
+        }
         const percent = Math.round((done / wbProblems.length) * 100);
         map.set(wb.id, {
           totalTracked: wbProblems.length,
           done,
           attention,
           percent,
+          activeRound,
         });
       } else {
-        const done = wbStates.filter((s) => s.status === 'done').length;
-        const attention = wbStates.filter(
-          (s) => s.status === 'review' || s.status === 'weak',
-        ).length;
+        let done = 0;
+        let attention = 0;
+        for (const s of wbStates) {
+          const st = resolveRoundRecord(s, activeRound, firstRound).status;
+          if (st === 'done') done++;
+          else if (st === 'review' || st === 'weak') attention++;
+        }
         const percent =
           wb.pageCount > 0 ? Math.min(100, Math.round((done / wb.pageCount) * 100)) : 0;
         map.set(wb.id, {
@@ -118,42 +129,45 @@ export function HomePage() {
           done,
           attention,
           percent,
+          activeRound,
         });
       }
     }
     return map;
   }, [workbooks, problems, pageStates]);
 
-  // Global review list across all workbooks
+  // Global review list across all workbooks (each workbook's active round)
   const globalReviewRows = useMemo<GlobalReviewRow[]>(() => {
     const wbMap = new Map(workbooks.map((w) => [w.id, w]));
     const rows: GlobalReviewRow[] = [];
 
     for (const p of problems) {
-      if (p.status !== 'review' && p.status !== 'weak') continue;
       const wb = wbMap.get(p.workbookId);
       if (!wb) continue;
+      const rec = resolveRoundRecord(p, resolveActiveLayer(wb), wb.layers[0] ?? '1周目');
+      if (rec.status !== 'review' && rec.status !== 'weak') continue;
       rows.push({
         id: `prob:${p.id}`,
         workbook: wb,
         pageNumber: p.pageNumber,
         label: p.numberLabel,
-        status: p.status,
-        missReasons: p.missReasons,
+        status: rec.status,
+        missReasons: rec.missReasons,
       });
     }
 
     for (const s of pageStates) {
-      if (s.status !== 'review' && s.status !== 'weak') continue;
       const wb = wbMap.get(s.workbookId);
       if (!wb) continue;
+      const rec = resolveRoundRecord(s, resolveActiveLayer(wb), wb.layers[0] ?? '1周目');
+      if (rec.status !== 'review' && rec.status !== 'weak') continue;
       rows.push({
         id: `page:${s.id}`,
         workbook: wb,
         pageNumber: s.pageNumber,
         label: `P.${s.pageNumber}`,
-        status: s.status,
-        missReasons: s.missReasons,
+        status: rec.status,
+        missReasons: rec.missReasons,
       });
     }
 
@@ -459,6 +473,12 @@ export function HomePage() {
                       {st && st.attention > 0 && (
                         <span className="absolute top-3 left-3 text-[11px] font-medium px-2 py-0.5 rounded-full bg-base-100/95 border border-base-300 text-amber-600 dark:text-amber-400">
                           要復習 {st.attention}
+                        </span>
+                      )}
+
+                      {st && wb.layers.length > 1 && (
+                        <span className="absolute top-3 right-3 text-[11px] font-medium px-2 py-0.5 rounded-full bg-base-100/95 border border-base-300 text-primary">
+                          {st.activeRound}
                         </span>
                       )}
                     </div>

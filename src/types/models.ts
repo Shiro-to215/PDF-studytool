@@ -10,6 +10,11 @@ export interface MissHistoryEntry {
   reasons: string[];
 }
 
+export interface RoundRecord {
+  status: StudyStatus;
+  missReasons: string[];
+}
+
 export interface AnswerValueItem {
   text: string;
   latex: boolean;
@@ -33,6 +38,8 @@ export interface Workbook {
   defaultSpread: SpreadMode;
   coverSinglePage: boolean;
   layers: string[];
+  /** Currently active study round name (persisted per workbook) */
+  activeLayer?: string;
   /** Legacy custom-only reasons kept for backwards compatibility */
   customReasons: string[];
   /** Full editable miss-reason tag list for this workbook (overrides defaults when present) */
@@ -53,6 +60,8 @@ export interface PageState {
   pageNumber: number;
   status: StudyStatus;
   missReasons: string[];
+  /** Per-round status & miss reasons keyed by round (layer) name */
+  roundRecords?: Record<string, RoundRecord>;
   missHistory: MissHistoryEntry[];
   hints: string[];
   compactAnswer: string;
@@ -78,6 +87,8 @@ export interface Problem {
   order: number;
   status: StudyStatus;
   missReasons: string[];
+  /** Per-round status & miss reasons keyed by round (layer) name */
+  roundRecords?: Record<string, RoundRecord>;
   missHistory: MissHistoryEntry[];
   hints: string[];
   compactAnswer: string;
@@ -125,6 +136,32 @@ export function resolveWorkbookMissReasons(
     return workbook.missReasonOptions;
   }
   return Array.from(new Set([...DEFAULT_MISS_REASONS, ...(workbook.customReasons ?? [])]));
+}
+
+export function resolveActiveLayer(
+  workbook: Pick<Workbook, 'layers' | 'activeLayer'>,
+): string {
+  const layers = workbook.layers.length > 0 ? workbook.layers : ['1周目'];
+  if (workbook.activeLayer && layers.includes(workbook.activeLayer)) {
+    return workbook.activeLayer;
+  }
+  return layers[0];
+}
+
+export function resolveRoundRecord(
+  item: Pick<Problem | PageState, 'status' | 'missReasons' | 'roundRecords'>,
+  layerName: string,
+  firstLayerName = '1周目',
+): RoundRecord {
+  if (item.roundRecords) {
+    const rec = item.roundRecords[layerName];
+    if (rec) return rec;
+    return { status: 'none', missReasons: [] };
+  }
+  if (layerName === firstLayerName) {
+    return { status: item.status, missReasons: item.missReasons };
+  }
+  return { status: 'none', missReasons: [] };
 }
 
 export const STUDY_STATUS_META: Record<

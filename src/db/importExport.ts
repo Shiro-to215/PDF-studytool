@@ -361,6 +361,7 @@ export async function importBackupJson(jsonText: string): Promise<{
         defaultSpread: bWb.defaultSpread,
         coverSinglePage: bWb.coverSinglePage,
         layers: Array.from(new Set([...target.layers, ...(bWb.layers ?? [])])),
+        ...(bWb.activeLayer ? { activeLayer: bWb.activeLayer } : {}),
         customReasons: Array.from(new Set([...target.customReasons, ...(bWb.customReasons ?? [])])),
         ...(bWb.missReasonOptions !== undefined
           ? { missReasonOptions: bWb.missReasonOptions }
