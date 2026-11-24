@@ -147,8 +147,6 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       penSizeIndex,
       markerSizeIndex,
       activeLayer,
-      hiddenLayers,
-      allInkHidden,
       pushHistory,
       popUndo,
       popRedo,
@@ -590,13 +588,18 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       [currentPage, spreadMode, coverSinglePage],
     );
 
-    // Prefetch current spread + full adjacent spreads (both sides of next/prev, plus 1 spread further)
-    // so turning either side never briefly flashes a blank white page.
+    // Two-stage prefetch:
+    //  1) High-res Retina for current spread + immediate next/prev spreads (0ms crisp turn)
+    //  2) Lightweight 360px previews spreading outward up to 6 spreads ahead & 4 spreads behind
+    //     so rapid flipping shows an instant preview instead of blank white before sharpening.
     useEffect(() => {
       if (!pdfManager || pageCount <= 0) return;
 
-      const pages: number[] = [];
-      const pushSpread = (anchorPage: number | null) => {
+      const nearPages: number[] = [];
+      const farPreviewPages: number[] = [];
+      const seen = new Set<number>();
+
+      const pushSpread = (target: number[], anchorPage: number | null) => {
         if (anchorPage === null) return;
         const sp = getSpreadLayout(
           anchorPage,
@@ -605,26 +608,37 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
           bindingDirection,
           coverSinglePage,
         );
-        if (sp.leftPage !== null) pages.push(sp.leftPage);
-        if (sp.rightPage !== null) pages.push(sp.rightPage);
+        for (const p of [sp.leftPage, sp.rightPage]) {
+          if (p !== null && !seen.has(p)) {
+            seen.add(p);
+            target.push(p);
+          }
+        }
       };
 
-      const next2 =
-        nextTargetPage !== null
-          ? getNextSpreadPage(nextTargetPage, pageCount, spreadMode, coverSinglePage)
-          : null;
-      const prev2 =
-        prevTargetPage !== null
-          ? getPrevSpreadPage(prevTargetPage, spreadMode, coverSinglePage)
-          : null;
+      pushSpread(nearPages, currentPage);
+      pushSpread(nearPages, nextTargetPage);
+      pushSpread(nearPages, prevTargetPage);
 
-      pushSpread(currentPage);
-      pushSpread(nextTargetPage);
-      pushSpread(prevTargetPage);
-      pushSpread(next2);
-      pushSpread(prev2);
+      let nextCursor = nextTargetPage;
+      let prevCursor = prevTargetPage;
+      for (let step = 0; step < 6; step++) {
+        if (nextCursor !== null) {
+          nextCursor = getNextSpreadPage(nextCursor, pageCount, spreadMode, coverSinglePage);
+          pushSpread(farPreviewPages, nextCursor);
+        }
+        if (step < 4 && prevCursor !== null) {
+          prevCursor = getPrevSpreadPage(prevCursor, spreadMode, coverSinglePage);
+          pushSpread(farPreviewPages, prevCursor);
+        }
+      }
 
-      pdfManager.prefetchPages(pages, getIdealRenderWidth(pageW, 1, aspectRatio));
+      pdfManager.prefetchPages(
+        nearPages,
+        getIdealRenderWidth(pageW, 1, aspectRatio),
+        nearPages.length,
+        farPreviewPages,
+      );
     }, [
       pdfManager,
       currentPage,
@@ -659,41 +673,36 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       [workbookId],
     );
 
-    // Build visible strokes lookup by pageNumber (preferring optimistic cache over DB)
+    // Build visible strokes lookup for the currently active round only
     const visibleStrokesByPage = useMemo(() => {
       const map = new Map<number, Stroke[]>();
-      if (allInkHidden) return map;
+      const targetLayer = layers.includes(activeLayer)
+        ? activeLayer
+        : layers[0] ?? activeLayer;
 
-      const dbByKey = new Map<string, Stroke[]>();
+      const dbByPage = new Map<number, Stroke[]>();
       const allPages = new Set<number>();
       for (const rec of allPageStrokes) {
-        dbByKey.set(`${rec.pageNumber}:${rec.layerName}`, rec.strokes);
+        if (rec.layerName !== targetLayer) continue;
+        dbByPage.set(rec.pageNumber, rec.strokes);
         allPages.add(rec.pageNumber);
       }
+      const suffix = `:${targetLayer}`;
       for (const key of Object.keys(optimisticStrokes)) {
-        const sep = key.indexOf(':');
-        if (sep > 0) {
-          const p = Number(key.slice(0, sep));
-          if (Number.isFinite(p)) allPages.add(p);
-        }
+        if (!key.endsWith(suffix)) continue;
+        const p = Number(key.slice(0, key.length - suffix.length));
+        if (Number.isFinite(p)) allPages.add(p);
       }
 
-      const visibleOrder = layers.filter((l) => !hiddenLayers.includes(l));
       for (const pageNum of allPages) {
-        const merged: Stroke[] = [];
-        for (const layerName of visibleOrder) {
-          const key = `${pageNum}:${layerName}`;
-          const list = key in optimisticStrokes ? optimisticStrokes[key] : dbByKey.get(key);
-          if (list && list.length > 0) {
-            merged.push(...list);
-          }
-        }
-        if (merged.length > 0) {
-          map.set(pageNum, merged);
+        const key = `${pageNum}:${targetLayer}`;
+        const list = key in optimisticStrokes ? optimisticStrokes[key] : dbByPage.get(pageNum);
+        if (list && list.length > 0) {
+          map.set(pageNum, list);
         }
       }
       return map;
-    }, [allPageStrokes, optimisticStrokes, layers, hiddenLayers, allInkHidden]);
+    }, [allPageStrokes, optimisticStrokes, layers, activeLayer]);
 
     const getLayerStrokes = useCallback(
       (pageNum: number, layerName: string): Stroke[] => {
@@ -1610,7 +1619,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         ? undefined
                         : getDraftsForPage(layout.leftPage)
                     }
-                    hideInk={allInkHidden}
+                    hideInk={false}
                     renderScale={1}
                   />
                   <div className="absolute inset-0 spine-shadow-left pointer-events-none" />
@@ -1645,7 +1654,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         ? undefined
                         : getDraftsForPage(layout.rightPage)
                     }
-                    hideInk={allInkHidden}
+                    hideInk={false}
                     renderScale={1}
                   />
                   <div className="absolute inset-0 spine-shadow-right pointer-events-none" />
@@ -1681,7 +1690,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         width={scaledPageW}
                         height={scaledPageH}
                         strokes={getStrokesForPage(flipSession.leafFront)}
-                        hideInk={allInkHidden}
+                        hideInk={false}
                         renderScale={1}
                       />
                       <div
@@ -1717,7 +1726,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         width={scaledPageW}
                         height={scaledPageH}
                         strokes={getStrokesForPage(flipSession.leafBack)}
-                        hideInk={allInkHidden}
+                        hideInk={false}
                         renderScale={1}
                       />
                       <div
@@ -1758,7 +1767,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         ? undefined
                         : getDraftsForPage(layout.leftPage)
                     }
-                    hideInk={allInkHidden}
+                    hideInk={false}
                     renderScale={1}
                     className="rounded-lg"
                   />
@@ -1793,7 +1802,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         width={scaledPageW}
                         height={scaledPageH}
                         strokes={getStrokesForPage(flipSession.leafPage)}
-                        hideInk={allInkHidden}
+                        hideInk={false}
                         renderScale={1}
                         className="rounded-lg"
                       />

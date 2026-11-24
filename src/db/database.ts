@@ -43,6 +43,47 @@ export class PaperWorkDB extends Dexie {
       problems: 'id, workbookId, unitId, [workbookId+pageNumber], status',
       pageStrokes: 'id, workbookId, [workbookId+pageNumber], [workbookId+pageNumber+layerName]',
     });
+    this.version(3)
+      .stores({
+        workbooks: 'id, updatedAt',
+        pdfFiles: 'workbookId',
+        pageStates: 'id, workbookId, [workbookId+pageNumber], status',
+        unitNodes: 'id, workbookId, parentId, [workbookId+parentId]',
+        problems: 'id, workbookId, unitId, [workbookId+pageNumber], status',
+        pageStrokes:
+          'id, workbookId, [workbookId+layerName], [workbookId+pageNumber], [workbookId+pageNumber+layerName]',
+      })
+      .upgrade(async (tx) => {
+        // Strip redundant empty ('none') roundRecords entries created by earlier Round 2 bulk writes
+        const stripEmptyRounds = (item: {
+          status: StudyStatus;
+          missReasons: string[];
+          roundRecords?: Record<string, RoundRecord>;
+        }) => {
+          if (!item.roundRecords) return;
+          const compacted: Record<string, RoundRecord> = {};
+          let keptCount = 0;
+          let origCount = 0;
+          for (const [k, rec] of Object.entries(item.roundRecords)) {
+            origCount++;
+            if (rec && (rec.status !== 'none' || (rec.missReasons && rec.missReasons.length > 0))) {
+              compacted[k] = { status: rec.status, missReasons: rec.missReasons ?? [] };
+              keptCount++;
+            }
+          }
+          if (keptCount === origCount) return;
+          if (keptCount === 0) {
+            delete item.roundRecords;
+            item.status = 'none';
+            item.missReasons = [];
+          } else {
+            item.roundRecords = compacted;
+          }
+        };
+
+        await tx.table('problems').toCollection().modify(stripEmptyRounds);
+        await tx.table('pageStates').toCollection().modify(stripEmptyRounds);
+      });
   }
 }
 
@@ -153,17 +194,17 @@ export async function addWorkbook(input: CreateWorkbookInput): Promise<Workbook>
   return workbook;
 }
 
-function normalizeBufferToUint8Array(data: ArrayBuffer | Uint8Array): Uint8Array {
+function wrapBufferAsUint8Array(data: ArrayBuffer | Uint8Array): Uint8Array {
   if (data instanceof Uint8Array) {
-    return new Uint8Array(data);
+    return data;
   }
-  return new Uint8Array(data.slice(0));
+  return new Uint8Array(data);
 }
 
 export async function getWorkbookPdfBytes(workbookId: string): Promise<Uint8Array> {
   const fileRecord = await db.pdfFiles.get(workbookId);
   if (fileRecord?.data) {
-    return normalizeBufferToUint8Array(fileRecord.data);
+    return wrapBufferAsUint8Array(fileRecord.data);
   }
 
   // Legacy v1 fallback: migrate pdfBlob to pdfFiles if still readable
@@ -174,7 +215,7 @@ export async function getWorkbookPdfBytes(workbookId: string): Promise<Uint8Arra
       await db.pdfFiles.put({ workbookId, data: rawBuffer });
       await db.workbooks.update(workbookId, { pdfBlob: undefined });
     });
-    return new Uint8Array(rawBuffer.slice(0));
+    return new Uint8Array(rawBuffer);
   }
 
   throw new Error('PDFデータが見つかりませんでした。ファイルを選び直してください。');
@@ -257,7 +298,9 @@ function buildBaseRoundRecords(
   if (existing?.roundRecords) {
     const copy: Record<string, RoundRecord> = {};
     for (const [k, v] of Object.entries(existing.roundRecords)) {
-      copy[k] = { status: v.status, missReasons: [...v.missReasons] };
+      if (v.status !== 'none' || v.missReasons.length > 0) {
+        copy[k] = { status: v.status, missReasons: [...v.missReasons] };
+      }
     }
     return copy;
   }
@@ -270,6 +313,39 @@ function buildBaseRoundRecords(
     };
   }
   return {};
+}
+
+function compactRoundRecords(
+  rr: Record<string, RoundRecord>,
+): Record<string, RoundRecord> | undefined {
+  const out: Record<string, RoundRecord> = {};
+  let count = 0;
+  for (const [k, v] of Object.entries(rr)) {
+    if (v.status !== 'none' || v.missReasons.length > 0) {
+      out[k] = { status: v.status, missReasons: [...v.missReasons] };
+      count++;
+    }
+  }
+  return count > 0 ? out : undefined;
+}
+
+function roundRecordsEqual(
+  a: Record<string, RoundRecord> | undefined,
+  b: Record<string, RoundRecord> | undefined,
+): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const k of keysA) {
+    const ra = a[k];
+    const rb = b[k];
+    if (!rb || ra.status !== rb.status || !sameStringArray(ra.missReasons, rb.missReasons)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export async function upsertPageState(
@@ -306,11 +382,16 @@ export async function upsertPageState(
 
   const nextRoundRecords = buildBaseRoundRecords(existing, firstLayer);
   if (patch.status !== undefined || patch.missReasons !== undefined || existing?.roundRecords) {
-    nextRoundRecords[targetLayer] = {
-      status: nextStatus,
-      missReasons: [...nextReasons],
-    };
+    if (nextStatus === 'none' && nextReasons.length === 0) {
+      delete nextRoundRecords[targetLayer];
+    } else {
+      nextRoundRecords[targetLayer] = {
+        status: nextStatus,
+        missReasons: [...nextReasons],
+      };
+    }
   }
+  const compacted = compactRoundRecords(nextRoundRecords);
 
   const nextState: PageState = {
     id,
@@ -318,7 +399,7 @@ export async function upsertPageState(
     pageNumber,
     status: nextStatus,
     missReasons: nextReasons,
-    ...(Object.keys(nextRoundRecords).length > 0 ? { roundRecords: nextRoundRecords } : {}),
+    ...(compacted ? { roundRecords: compacted } : {}),
     missHistory: history,
     hints: patch.hints ?? existing?.hints ?? [],
     compactAnswer: patch.compactAnswer ?? existing?.compactAnswer ?? '',
@@ -373,18 +454,24 @@ export async function upsertProblem(
 
   const nextRoundRecords = buildBaseRoundRecords(existing, firstLayer);
   if (patch.status !== undefined || patch.missReasons !== undefined || existing.roundRecords) {
-    nextRoundRecords[targetLayer] = {
-      status: nextStatus,
-      missReasons: [...nextReasons],
-    };
+    if (nextStatus === 'none' && nextReasons.length === 0) {
+      delete nextRoundRecords[targetLayer];
+    } else {
+      nextRoundRecords[targetLayer] = {
+        status: nextStatus,
+        missReasons: [...nextReasons],
+      };
+    }
   }
+  const compacted = compactRoundRecords(nextRoundRecords);
 
+  const { roundRecords: _prevRoundRecords, ...existingWithoutRounds } = existing;
   const nextProblem: Problem = {
-    ...existing,
+    ...existingWithoutRounds,
     ...patch,
     status: nextStatus,
     missReasons: nextReasons,
-    ...(Object.keys(nextRoundRecords).length > 0 ? { roundRecords: nextRoundRecords } : {}),
+    ...(compacted ? { roundRecords: compacted } : {}),
     missHistory: history,
     updatedAt: now,
   };
@@ -451,7 +538,32 @@ export async function addWorkbookRound(
   const firstLayer = wb.layers[0] ?? '1周目';
   const fromLayer = sourceLayerName ?? resolveActiveLayer(wb);
   const now = Date.now();
-  const nextLayers = [...wb.layers, targetName];
+  let nextLayers: string[];
+  if (mode === 'carry_done') {
+    const srcIdx = wb.layers.indexOf(fromLayer);
+    if (srcIdx >= 0) {
+      nextLayers = [
+        ...wb.layers.slice(0, srcIdx + 1),
+        targetName,
+        ...wb.layers.slice(srcIdx + 1),
+      ];
+    } else {
+      nextLayers = [...wb.layers, targetName];
+    }
+  } else {
+    nextLayers = [...wb.layers, targetName];
+  }
+
+  if (mode === 'fresh') {
+    // Untouched problems/pageStates resolve to 'none' automatically via resolveRoundRecord,
+    // so creating a fresh round needs zero writes to problems/pageStates.
+    await db.workbooks.update(workbookId, {
+      layers: nextLayers,
+      activeLayer: targetName,
+      updatedAt: now,
+    });
+    return targetName;
+  }
 
   await db.transaction(
     'rw',
@@ -466,18 +578,17 @@ export async function addWorkbookRound(
       const problems = await db.problems.where('workbookId').equals(workbookId).toArray();
       const updatedProblems: Problem[] = [];
       for (const p of problems) {
-        const rr = buildBaseRoundRecords(p, firstLayer);
         const srcRec = resolveRoundRecord(p, fromLayer, firstLayer);
-        const carriedDone = mode === 'carry_done' && srcRec.status === 'done';
-        const nextRec: RoundRecord = carriedDone
-          ? { status: 'done', missReasons: [] }
-          : { status: 'none', missReasons: [] };
-        rr[targetName] = nextRec;
+        if (srcRec.status !== 'done') continue;
+        const rr = buildBaseRoundRecords(p, firstLayer);
+        rr[targetName] = { status: 'done', missReasons: [] };
+        const compacted = compactRoundRecords(rr);
+        const { roundRecords: _prevRR, ...rest } = p;
         updatedProblems.push({
-          ...p,
-          status: nextRec.status,
-          missReasons: nextRec.missReasons,
-          roundRecords: rr,
+          ...rest,
+          status: 'done',
+          missReasons: [],
+          ...(compacted ? { roundRecords: compacted } : {}),
           updatedAt: now,
         });
       }
@@ -488,18 +599,17 @@ export async function addWorkbookRound(
       const states = await db.pageStates.where('workbookId').equals(workbookId).toArray();
       const updatedStates: PageState[] = [];
       for (const s of states) {
-        const rr = buildBaseRoundRecords(s, firstLayer);
         const srcRec = resolveRoundRecord(s, fromLayer, firstLayer);
-        const carriedDone = mode === 'carry_done' && srcRec.status === 'done';
-        const nextRec: RoundRecord = carriedDone
-          ? { status: 'done', missReasons: [] }
-          : { status: 'none', missReasons: [] };
-        rr[targetName] = nextRec;
+        if (srcRec.status !== 'done') continue;
+        const rr = buildBaseRoundRecords(s, firstLayer);
+        rr[targetName] = { status: 'done', missReasons: [] };
+        const compacted = compactRoundRecords(rr);
+        const { roundRecords: _prevRR, ...rest } = s;
         updatedStates.push({
-          ...s,
-          status: nextRec.status,
-          missReasons: nextRec.missReasons,
-          roundRecords: rr,
+          ...rest,
+          status: 'done',
+          missReasons: [],
+          ...(compacted ? { roundRecords: compacted } : {}),
           updatedAt: now,
         });
       }
@@ -531,7 +641,7 @@ export async function updateWorkbookRounds(
 
   const remapRecords = (
     item: Pick<Problem | PageState, 'status' | 'missReasons' | 'roundRecords'>,
-  ): Record<string, RoundRecord> => {
+  ): Record<string, RoundRecord> | undefined => {
     const base = buildBaseRoundRecords(item, firstOldLayer);
     const out: Record<string, RoundRecord> = {};
     for (const [oldName, rec] of Object.entries(base)) {
@@ -541,7 +651,7 @@ export async function updateWorkbookRounds(
         out[mapped] = { status: rec.status, missReasons: [...rec.missReasons] };
       }
     }
-    return out;
+    return compactRoundRecords(out);
   };
 
   await db.transaction(
@@ -555,34 +665,52 @@ export async function updateWorkbookRounds(
       });
 
       const problems = await db.problems.where('workbookId').equals(workbookId).toArray();
-      if (problems.length > 0) {
-        const updatedProblems = problems.map((p) => {
-          const rr = remapRecords(p);
-          const activeRec = rr[nextActive] ?? { status: 'none' as StudyStatus, missReasons: [] };
-          return {
-            ...p,
-            status: activeRec.status,
-            missReasons: activeRec.missReasons,
-            roundRecords: rr,
-            updatedAt: now,
-          };
+      const updatedProblems: Problem[] = [];
+      for (const p of problems) {
+        const rr = remapRecords(p);
+        const activeRec = rr?.[nextActive] ?? { status: 'none' as StudyStatus, missReasons: [] };
+        if (
+          roundRecordsEqual(p.roundRecords, rr) &&
+          p.status === activeRec.status &&
+          sameStringArray(p.missReasons, activeRec.missReasons)
+        ) {
+          continue;
+        }
+        const { roundRecords: _prevRR, ...rest } = p;
+        updatedProblems.push({
+          ...rest,
+          status: activeRec.status,
+          missReasons: activeRec.missReasons,
+          ...(rr ? { roundRecords: rr } : {}),
+          updatedAt: now,
         });
+      }
+      if (updatedProblems.length > 0) {
         await db.problems.bulkPut(updatedProblems);
       }
 
       const states = await db.pageStates.where('workbookId').equals(workbookId).toArray();
-      if (states.length > 0) {
-        const updatedStates = states.map((s) => {
-          const rr = remapRecords(s);
-          const activeRec = rr[nextActive] ?? { status: 'none' as StudyStatus, missReasons: [] };
-          return {
-            ...s,
-            status: activeRec.status,
-            missReasons: activeRec.missReasons,
-            roundRecords: rr,
-            updatedAt: now,
-          };
+      const updatedStates: PageState[] = [];
+      for (const s of states) {
+        const rr = remapRecords(s);
+        const activeRec = rr?.[nextActive] ?? { status: 'none' as StudyStatus, missReasons: [] };
+        if (
+          roundRecordsEqual(s.roundRecords, rr) &&
+          s.status === activeRec.status &&
+          sameStringArray(s.missReasons, activeRec.missReasons)
+        ) {
+          continue;
+        }
+        const { roundRecords: _prevRR, ...rest } = s;
+        updatedStates.push({
+          ...rest,
+          status: activeRec.status,
+          missReasons: activeRec.missReasons,
+          ...(rr ? { roundRecords: rr } : {}),
+          updatedAt: now,
         });
+      }
+      if (updatedStates.length > 0) {
         await db.pageStates.bulkPut(updatedStates);
       }
 

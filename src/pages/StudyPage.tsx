@@ -3,6 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { FileUp } from 'lucide-react';
 import {
   db,
+  getPageStrokesId,
   getWorkbookPdfBytes,
   relinkWorkbookPdf,
   updateWorkbookSettings,
@@ -16,7 +17,12 @@ import {
   type UnitNode,
 } from '../types/models';
 import { PdfDocumentManager } from '../utils/pdfEngine';
-import { getSpreadLayout, useViewerStore } from '../stores/useViewerStore';
+import {
+  getNextSpreadPage,
+  getPrevSpreadPage,
+  getSpreadLayout,
+  useViewerStore,
+} from '../stores/useViewerStore';
 import { useToolStore } from '../stores/useToolStore';
 import { TopBar } from '../components/toolbar/TopBar';
 import {
@@ -32,6 +38,7 @@ import {
   type StudySidebarHandle,
 } from '../components/sidebar/StudySidebar';
 import { ImportIndexModal } from '../components/home/ImportIndexModal';
+import { WorkbookSettingsModal } from '../components/home/WorkbookSettingsModal';
 
 const SIDEBAR_ANIM_DURATION_MS = 400;
 const DESKTOP_LG_BREAKPOINT = 1024;
@@ -54,6 +61,9 @@ export function StudyPage({ workbookId }: StudyPageProps) {
     coverSinglePage,
     sidebarOpen,
     pageNavSeq,
+    setSpreadMode,
+    setBindingDirection,
+    setCoverSinglePage,
     setTocUnitId,
     closeWorkbook,
   } = useViewerStore();
@@ -81,9 +91,61 @@ export function StudyPage({ workbookId }: StudyPageProps) {
     [] as Problem[],
   );
 
+  const activeRound = workbook ? resolveActiveLayer(workbook) : '1周目';
+  const workbookReadyLayer = workbook ? activeRound : null;
+  const firstRound = workbook?.layers[0] ?? '1周目';
+
+  // Fetch pen strokes ONLY for the current spread + adjacent spreads of the active round
+  // via O(1) primary-key bulkGet, expanding as the user turns pages instead of scanning all rounds/pages.
+  const strokeTargetPages = useMemo(() => {
+    if (pageCount <= 0) return [] as number[];
+    const pages = new Set<number>();
+    const pushSpread = (anchorPage: number | null) => {
+      if (anchorPage === null) return;
+      const sp = getSpreadLayout(
+        anchorPage,
+        pageCount,
+        spreadMode,
+        bindingDirection,
+        coverSinglePage,
+      );
+      if (sp.leftPage !== null) pages.add(sp.leftPage);
+      if (sp.rightPage !== null) pages.add(sp.rightPage);
+    };
+
+    const next1 = getNextSpreadPage(currentPage, pageCount, spreadMode, coverSinglePage);
+    const prev1 = getPrevSpreadPage(currentPage, spreadMode, coverSinglePage);
+    const next2 =
+      next1 !== null
+        ? getNextSpreadPage(next1, pageCount, spreadMode, coverSinglePage)
+        : null;
+    const prev2 =
+      prev1 !== null
+        ? getPrevSpreadPage(prev1, spreadMode, coverSinglePage)
+        : null;
+
+    pushSpread(currentPage);
+    pushSpread(next1);
+    pushSpread(prev1);
+    pushSpread(next2);
+    pushSpread(prev2);
+    return Array.from(pages).sort((a, b) => a - b);
+  }, [currentPage, pageCount, spreadMode, bindingDirection, coverSinglePage]);
+
+  const strokeTargetPagesKey = strokeTargetPages.join(',');
+
   const allPageStrokes = useLiveQuery(
-    () => db.pageStrokes.where('workbookId').equals(workbookId).toArray(),
-    [workbookId],
+    async () => {
+      if (!workbookReadyLayer || strokeTargetPages.length === 0) {
+        return [] as PageStrokes[];
+      }
+      const keys = strokeTargetPages.map((p) =>
+        getPageStrokesId(workbookId, p, workbookReadyLayer),
+      );
+      const records = await db.pageStrokes.bulkGet(keys);
+      return records.filter((r): r is PageStrokes => r !== undefined);
+    },
+    [workbookId, workbookReadyLayer, strokeTargetPagesKey],
     [] as PageStrokes[],
   );
 
@@ -93,6 +155,7 @@ export function StudyPage({ workbookId }: StudyPageProps) {
   const [reloadSeq, setReloadSeq] = useState(0);
   const [relinking, setRelinking] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [settledRightInset, setSettledRightInset] = useState(() =>
     typeof window !== 'undefined' && window.innerWidth >= DESKTOP_LG_BREAKPOINT && sidebarOpen
       ? 350
@@ -109,14 +172,27 @@ export function StudyPage({ workbookId }: StudyPageProps) {
   const isWorkbookReady = Boolean(workbook);
   const setActiveLayer = useToolStore((s) => s.setActiveLayer);
 
-  const activeRound = workbook ? resolveActiveLayer(workbook) : '1周目';
-  const firstRound = workbook?.layers[0] ?? '1周目';
-
   // Keep drawing tool's activeLayer strictly synced to the workbook's active round
   useEffect(() => {
     if (!workbook) return;
     setActiveLayer(activeRound);
   }, [workbook?.id, activeRound, setActiveLayer]);
+
+  // Keep viewer display settings synced when updated via WorkbookSettingsModal
+  useEffect(() => {
+    if (!workbook) return;
+    setBindingDirection(workbook.bindingDirection);
+    setCoverSinglePage(workbook.coverSinglePage);
+    setSpreadMode(workbook.defaultSpread);
+  }, [
+    workbook?.id,
+    workbook?.bindingDirection,
+    workbook?.coverSinglePage,
+    workbook?.defaultSpread,
+    setBindingDirection,
+    setCoverSinglePage,
+    setSpreadMode,
+  ]);
 
   // Project problems & pageStates onto the active round so Record / TOC / Review all reflect it
   const activeProblems = useMemo(
@@ -260,12 +336,9 @@ export function StudyPage({ workbookId }: StudyPageProps) {
     setPdfError(null);
     setPdfManager(null);
 
-    void Promise.all([db.workbooks.get(workbookId), getWorkbookPdfBytes(workbookId)])
-      .then(([wb, bytes]) => {
+    void getWorkbookPdfBytes(workbookId)
+      .then((bytes) => {
         if (cancelled) return null;
-        if (wb) {
-          lastSavedPageRef.current = wb.lastPage;
-        }
         return manager.load(bytes);
       })
       .then((meta) => {
@@ -290,15 +363,24 @@ export function StudyPage({ workbookId }: StudyPageProps) {
     };
   }, [workbookId, reloadSeq]);
 
-  // Persist lastPage gently without triggering PDF reload
+  // Reset saved-page tracker when switching workbooks
   useEffect(() => {
+    lastSavedPageRef.current = null;
+  }, [workbookId]);
+
+  // Persist lastPage gently without triggering PDF reload or spurious writes on initial open
+  useEffect(() => {
+    if (!workbook) return;
+    if (lastSavedPageRef.current === null) {
+      lastSavedPageRef.current = workbook.lastPage;
+    }
     if (lastSavedPageRef.current === currentPage) return;
     const timer = setTimeout(() => {
       lastSavedPageRef.current = currentPage;
       void updateWorkbookSettings(workbookId, { lastPage: currentPage });
     }, 350);
     return () => clearTimeout(timer);
-  }, [workbookId, currentPage]);
+  }, [workbook, workbookId, currentPage]);
 
   // Reset TOC sync tracker when switching workbooks
   useEffect(() => {
@@ -391,6 +473,7 @@ export function StudyPage({ workbookId }: StudyPageProps) {
             problems={problems}
             pageStates={pageStates}
             onOpenImport={() => setImportOpen(true)}
+            onOpenSettings={() => setSettingsOpen(true)}
           />
 
           {pdfError ? (
@@ -461,6 +544,13 @@ export function StudyPage({ workbookId }: StudyPageProps) {
           workbookId={workbook.id}
           workbookTitle={workbook.title}
           onClose={() => setImportOpen(false)}
+        />
+      )}
+
+      {settingsOpen && (
+        <WorkbookSettingsModal
+          workbook={workbook}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
     </div>

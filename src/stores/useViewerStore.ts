@@ -220,15 +220,21 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
   },
 
   setSpreadMode: (spreadMode) =>
-    set({
-      spreadMode,
-      scale: 1,
-      panX: 0,
-      panY: 0,
-    }),
+    set((s) =>
+      s.spreadMode === spreadMode
+        ? s
+        : {
+            spreadMode,
+            scale: 1,
+            panX: 0,
+            panY: 0,
+          },
+    ),
 
-  setBindingDirection: (bindingDirection) => set({ bindingDirection }),
-  setCoverSinglePage: (coverSinglePage) => set({ coverSinglePage }),
+  setBindingDirection: (bindingDirection) =>
+    set((s) => (s.bindingDirection === bindingDirection ? s : { bindingDirection })),
+  setCoverSinglePage: (coverSinglePage) =>
+    set((s) => (s.coverSinglePage === coverSinglePage ? s : { coverSinglePage })),
 
   setZoomPan: (scale, panX, panY) =>
     set({

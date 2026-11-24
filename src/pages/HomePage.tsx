@@ -174,12 +174,13 @@ export function HomePage() {
     return rows;
   }, [workbooks, problems, pageStates]);
 
-  const totalDoneCount = useMemo(
-    () =>
-      problems.filter((p) => p.status === 'done').length +
-      pageStates.filter((s) => s.status === 'done').length,
-    [problems, pageStates],
-  );
+  const totalDoneCount = useMemo(() => {
+    let sum = 0;
+    for (const st of statsByWorkbook.values()) {
+      sum += st.done;
+    }
+    return sum;
+  }, [statsByWorkbook]);
 
   const handleOpenBook = (
     wb: Workbook,

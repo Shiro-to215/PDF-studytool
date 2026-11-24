@@ -2,8 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   ArrowLeft,
   BookOpen,
-  Eye,
-  EyeOff,
+  ChevronsLeftRight,
   FileSpreadsheet,
   FileText,
   Layers,
@@ -11,6 +10,7 @@ import {
   Moon,
   Pencil,
   Plus,
+  Settings,
   Sun,
   Trash2,
 } from 'lucide-react';
@@ -36,9 +36,16 @@ interface TopBarProps {
   problems: Problem[];
   pageStates: PageState[];
   onOpenImport: () => void;
+  onOpenSettings: () => void;
 }
 
-export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarProps) {
+export function TopBar({
+  workbook,
+  problems,
+  pageStates,
+  onOpenImport,
+  onOpenSettings,
+}: TopBarProps) {
   const { theme, toggleTheme } = useThemeStore();
   const {
     currentPage,
@@ -48,19 +55,11 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
     coverSinglePage,
     showPageTurnButtons,
     closeWorkbook,
-    setCurrentPage,
     setSpreadMode,
-    setCoverSinglePage,
     togglePageTurnButtons,
   } = useViewerStore();
 
-  const {
-    hiddenLayers,
-    allInkHidden,
-    setActiveLayer,
-    toggleLayerVisibility,
-    toggleAllInkHidden,
-  } = useToolStore();
+  const setActiveLayer = useToolStore((s) => s.setActiveLayer);
 
   const activeRound = resolveActiveLayer(workbook);
   const firstRound = workbook.layers[0] ?? '1周目';
@@ -72,10 +71,9 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
     left: false,
     right: false,
   });
-  const [editingPage, setEditingPage] = useState(false);
-  const [pageInput, setPageInput] = useState(String(currentPage));
 
   // Round creation & batch editing state
+  const [showAddRoundForm, setShowAddRoundForm] = useState(false);
   const [newRoundName, setNewRoundName] = useState('');
   const [newRoundMode, setNewRoundMode] = useState<'fresh' | 'carry_done'>('fresh');
   const [addingRound, setAddingRound] = useState(false);
@@ -87,10 +85,15 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
   const drawerRef = useRef<HTMLElement | null>(null);
   const titleScrollRef = useRef<HTMLDivElement | null>(null);
   const titleDidScrollRef = useRef(false);
+  const prevRoundStatsRef = useRef<Map<string, { done: number; total: number; pct: number }>>(
+    new Map(),
+  );
 
-  // Per-round completion stats (done / total)
+  // Per-round completion stats (done / total / percent) — computed only while left drawer is open
+  // (reuses last snapshot while closing so progress bars never flicker during the 400ms slide-out)
   const roundStatsMap = useMemo(() => {
-    const map = new Map<string, { done: number; total: number }>();
+    if (!menuOpen) return prevRoundStatsRef.current;
+    const map = new Map<string, { done: number; total: number; pct: number }>();
     const hasProblems = problems.length > 0;
     const total = hasProblems ? problems.length : workbook.pageCount;
 
@@ -105,14 +108,12 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
           if (resolveRoundRecord(s, layer, firstRound).status === 'done') done++;
         }
       }
-      map.set(layer, { done, total });
+      const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+      map.set(layer, { done, total, pct });
     }
+    prevRoundStatsRef.current = map;
     return map;
-  }, [workbook.layers, workbook.pageCount, problems, pageStates, firstRound]);
-
-  useEffect(() => {
-    setPageInput(String(currentPage));
-  }, [currentPage]);
+  }, [menuOpen, workbook.layers, workbook.pageCount, problems, pageStates, firstRound]);
 
   useEffect(() => {
     if (!editingTitle) {
@@ -161,9 +162,9 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
       if (!target) return;
       if (drawerRef.current?.contains(target)) return;
       setMenuOpen(false);
-      setEditingPage(false);
       setEditingTitle(false);
       setEditingRounds(false);
+      setShowAddRoundForm(false);
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -176,8 +177,11 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
           setEditingRounds(false);
           return;
         }
+        if (showAddRoundForm) {
+          setShowAddRoundForm(false);
+          return;
+        }
         setMenuOpen(false);
-        setEditingPage(false);
       }
     };
     window.addEventListener('pointerdown', handleOutside, true);
@@ -188,7 +192,7 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
       window.removeEventListener('touchstart', handleOutside, true);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [menuOpen, editingTitle, editingRounds, workbook.title]);
+  }, [menuOpen, editingTitle, editingRounds, showAddRoundForm, workbook.title]);
 
   const layout = getSpreadLayout(
     currentPage,
@@ -203,27 +207,10 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
       ? `P.${Math.min(...layout.pages)}–${Math.max(...layout.pages)}`
       : `P.${layout.pages[0] ?? currentPage}`;
 
-  const commitPageJump = (e: React.FormEvent) => {
-    e.preventDefault();
-    const num = parseInt(pageInput, 10);
-    if (Number.isFinite(num) && num >= 1 && num <= pageCount) {
-      setCurrentPage(num);
-    } else {
-      setPageInput(String(currentPage));
-    }
-    setEditingPage(false);
-  };
-
   const handleToggleSpread = () => {
     const next = spreadMode === 'double' ? 'single' : 'double';
     setSpreadMode(next);
     void updateWorkbookSettings(workbook.id, { defaultSpread: next });
-  };
-
-  const handleToggleCoverSingle = () => {
-    const next = !coverSinglePage;
-    setCoverSinglePage(next);
-    void updateWorkbookSettings(workbook.id, { coverSinglePage: next });
   };
 
   const handleSelectRound = (layer: string) => {
@@ -245,6 +232,7 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
       );
       setActiveLayer(createdName);
       setNewRoundName('');
+      setShowAddRoundForm(false);
     } finally {
       setAddingRound(false);
     }
@@ -255,6 +243,7 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
       setEditingRounds(false);
       return;
     }
+    setShowAddRoundForm(false);
     setRoundDrafts(workbook.layers.map((l) => ({ original: l, value: l })));
     setEditingRounds(true);
   };
@@ -321,10 +310,7 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
         type="button"
         onPointerDown={(e) => e.stopPropagation()}
         onTouchStart={(e) => e.stopPropagation()}
-        onClick={() => {
-          setMenuOpen(true);
-          setEditingPage(false);
-        }}
+        onClick={() => setMenuOpen(true)}
         aria-label="メニューを開く"
         aria-expanded={menuOpen}
         aria-hidden={menuOpen}
@@ -342,12 +328,6 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
         }`}
       >
         <Menu className="w-5 h-5" />
-        {allInkHidden && !menuOpen && (
-          <span
-            className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-warning ring-2 ring-base-100"
-            title="書き込み非表示中"
-          />
-        )}
       </button>
 
       {/* Inner Clipped Drawer Surface (sits above ear tab so tab tucks cleanly behind it) */}
@@ -357,7 +337,7 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
           menuOpen ? 'shadow-[12px_0_32px_rgba(15,23,42,0.14)]' : 'shadow-none'
         }`}
       >
-        {/* Fixed Header: Pill Back Button (matching TOC Back) + Tappable Scrollable Workbook Title */}
+        {/* Fixed Header: Pill Back Button + Tappable Scrollable Workbook Title */}
         <div className="px-4 py-3.5 border-b border-base-300 flex items-center gap-2.5 shrink-0">
           <button
             type="button"
@@ -459,250 +439,213 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
           )}
         </div>
 
-        {/* Scrollable Drawer Body */}
-        <div className="flex-1 overflow-y-auto thin-scrollbar p-4 space-y-5">
-          {/* Page Indicator / Jump */}
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-sm text-base-content/65 font-medium">ページ</span>
-            {editingPage ? (
-              <form onSubmit={commitPageJump} className="flex items-center gap-1.5">
-                <input
-                  type="number"
-                  min={1}
-                  max={pageCount}
-                  autoFocus
-                  value={pageInput}
-                  onChange={(e) => setPageInput(e.target.value)}
-                  onBlur={() => setEditingPage(false)}
-                  className="input input-bordered input-sm w-20 font-mono text-sm text-center"
-                />
-                <span className="text-sm text-base-content/50 font-mono">/ {pageCount}</span>
-              </form>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setEditingPage(true)}
-                title="タップしてページ番号を指定ジャンプ"
-                className="px-3 py-1.5 rounded-xl bg-base-200 hover:bg-base-300/70 transition-colors text-sm font-mono text-base-content/85"
-              >
-                {pageLabel} <span className="text-base-content/45">/ {pageCount}</span>
-              </button>
-            )}
-          </div>
-
-          {/* View & Theme Settings */}
-          <div className="space-y-3 pt-4 border-t border-base-300">
-            <div className="grid grid-cols-2 gap-2.5">
-              <button
-                type="button"
-                onClick={handleToggleSpread}
-                className="h-11 px-3 rounded-xl border border-base-300 bg-base-200/55 hover:bg-base-200 transition-colors flex items-center justify-center gap-2 text-sm font-medium text-base-content/85"
-                title={spreadMode === 'double' ? '単ページ表示へ切替' : '見開き表示へ切替'}
-              >
-                {spreadMode === 'double' ? (
-                  <>
-                    <BookOpen className="w-[18px] h-[18px] text-primary" />
-                    <span>見開き</span>
-                  </>
-                ) : (
-                  <>
-                    <FileText className="w-[18px] h-[18px] text-primary" />
-                    <span>単ページ</span>
-                  </>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={toggleTheme}
-                className="h-11 px-3 rounded-xl border border-base-300 bg-base-200/55 hover:bg-base-200 transition-colors flex items-center justify-center gap-2 text-sm font-medium text-base-content/85"
-                title={theme === 'light' ? 'ダークモードへ' : 'ライトモードへ'}
-              >
-                {theme === 'light' ? (
-                  <>
-                    <Moon className="w-[18px] h-[18px] text-base-content/75" />
-                    <span>ダーク</span>
-                  </>
-                ) : (
-                  <>
-                    <Sun className="w-[18px] h-[18px] text-amber-400" />
-                    <span>ライト</span>
-                  </>
-                )}
-              </button>
-            </div>
-
-            <div className="space-y-2.5 pt-0.5">
-              {spreadMode === 'double' && (
-                <label className="flex items-center gap-2.5 px-1 cursor-pointer text-xs text-base-content/75">
-                  <input
-                    type="checkbox"
-                    checked={coverSinglePage}
-                    onChange={handleToggleCoverSingle}
-                    className="checkbox checkbox-sm checkbox-primary"
-                  />
-                  1ページ目を表紙単独にする
-                </label>
+        {/* Compact 4-Icon Quick Settings Bar + Quiet Read-Only Page Info */}
+        <div className="px-4 py-3 border-b border-base-300 space-y-2.5 shrink-0">
+          <div className="grid grid-cols-4 gap-2">
+            {/* Spread / Single mode switch (neutral, matching Dark/Light mode switch) */}
+            <button
+              type="button"
+              onClick={handleToggleSpread}
+              aria-label={spreadMode === 'double' ? '単ページ表示に切り替え' : '見開き表示に切り替え'}
+              title={spreadMode === 'double' ? '見開き表示中（タップで単ページ）' : '単ページ表示中（タップで見開き）'}
+              className="h-11 rounded-xl border border-base-300 bg-base-200/60 hover:bg-base-200 text-base-content/75 hover:text-base-content flex items-center justify-center transition-colors active:scale-95"
+            >
+              {spreadMode === 'double' ? (
+                <BookOpen className="w-5 h-5" />
+              ) : (
+                <FileText className="w-5 h-5" />
               )}
-              <label className="flex items-center gap-2.5 px-1 cursor-pointer text-xs text-base-content/75">
-                <input
-                  type="checkbox"
-                  checked={showPageTurnButtons}
-                  onChange={togglePageTurnButtons}
-                  className="checkbox checkbox-sm checkbox-primary"
-                />
-                ページめくりボタンを表示
-              </label>
-            </div>
+            </button>
+
+            {/* Theme toggle */}
+            <button
+              type="button"
+              onClick={toggleTheme}
+              aria-label={theme === 'light' ? 'ダークモードに切り替え' : 'ライトモードに切り替え'}
+              title={theme === 'light' ? 'ダークモードへ' : 'ライトモードへ'}
+              className="h-11 rounded-xl border border-base-300 bg-base-200/60 hover:bg-base-200 flex items-center justify-center transition-colors active:scale-95"
+            >
+              {theme === 'light' ? (
+                <Moon className="w-5 h-5 text-base-content/75" />
+              ) : (
+                <Sun className="w-5 h-5 text-amber-400" />
+              )}
+            </button>
+
+            {/* Page-turn buttons visibility toggle */}
+            <button
+              type="button"
+              onClick={togglePageTurnButtons}
+              aria-pressed={showPageTurnButtons}
+              aria-label={
+                showPageTurnButtons
+                  ? 'ページめくりボタンを非表示にする'
+                  : 'ページめくりボタンを表示する'
+              }
+              title={
+                showPageTurnButtons
+                  ? 'ページめくりボタン：表示中（タップで非表示）'
+                  : 'ページめくりボタン：非表示（タップで表示）'
+              }
+              className={`h-11 rounded-xl border flex items-center justify-center transition-colors active:scale-95 ${
+                showPageTurnButtons
+                  ? 'bg-primary/10 border-primary/35 text-primary hover:bg-primary/15'
+                  : 'bg-base-200/60 border-base-300 text-base-content/45 hover:bg-base-200 hover:text-base-content/75'
+              }`}
+            >
+              <ChevronsLeftRight className="w-5 h-5" />
+            </button>
+
+            {/* Workbook settings modal (cover single page, binding direction, etc.) */}
+            <button
+              type="button"
+              onClick={() => {
+                setMenuOpen(false);
+                setEditingTitle(false);
+                setEditingRounds(false);
+                setShowAddRoundForm(false);
+                onOpenSettings();
+              }}
+              aria-label="ワーク設定を開く"
+              title="ワーク設定（表紙単独・綴じ方向など）"
+              className="h-11 rounded-xl border border-base-300 bg-base-200/60 hover:bg-base-200 text-base-content/75 hover:text-base-content flex items-center justify-center transition-colors active:scale-95"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
           </div>
 
-          {/* Study Rounds (per-round Status, Miss Reasons & Pen Strokes) */}
-          <div className="pt-4 border-t border-base-300 space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-sm font-semibold flex items-center gap-1.5">
-                <Layers className="w-4 h-4 text-base-content/60" />
-                周回
-              </span>
-              <div className="flex items-center gap-1.5">
-                {!editingRounds && (
+          {/* Quiet Read-Only Current Page Indicator */}
+          <div className="flex items-center justify-between px-1 text-xs">
+            <span className="text-base-content/50 font-medium">現在ページ</span>
+            <span className="font-mono font-medium text-base-content/75">
+              {pageLabel} <span className="text-base-content/40">/ {pageCount}</span>
+            </span>
+          </div>
+        </div>
+
+        {/* Hero Main Content: Study Rounds (per-round Status, Miss Reasons & Pen Strokes) */}
+        <div className="flex-1 overflow-y-auto thin-scrollbar p-4 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-sm font-semibold flex items-center gap-1.5">
+              <Layers className="w-4 h-4 text-base-content/60" />
+              周回
+            </span>
+            <button
+              type="button"
+              onClick={handleToggleEditRounds}
+              className={`h-8 px-2.5 rounded-lg text-xs font-medium text-primary flex items-center gap-1 transition-colors ${
+                editingRounds
+                  ? 'bg-primary/20'
+                  : 'bg-primary/10 hover:bg-primary/18'
+              }`}
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              編集
+            </button>
+          </div>
+
+          {editingRounds ? (
+            <div className="space-y-2">
+              {roundDrafts.map((draft, idx) => (
+                <div
+                  key={draft.original}
+                  className="flex items-center gap-1.5 rounded-xl border border-base-300 bg-base-200/40 p-2"
+                >
+                  <input
+                    type="text"
+                    value={draft.value}
+                    onChange={(e) => updateRoundDraft(idx, e.target.value)}
+                    placeholder={`${idx + 1}周目`}
+                    className="flex-1 h-9 px-3 rounded-lg border border-base-300 bg-base-100 text-sm focus:outline-none focus:border-primary"
+                  />
                   <button
                     type="button"
-                    onClick={toggleAllInkHidden}
-                    title={allInkHidden ? 'すべての書き込みを表示' : 'すべての書き込みを非表示'}
-                    className={`h-8 px-2 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors border ${
-                      allInkHidden
-                        ? 'bg-warning/15 text-warning border-warning/40'
-                        : 'bg-base-200/70 hover:bg-base-200 text-base-content/70 border-base-300'
-                    }`}
+                    disabled={roundDrafts.length <= 1}
+                    onClick={() => removeRoundDraft(idx)}
+                    className="w-8 h-9 rounded-lg flex items-center justify-center text-base-content/55 hover:text-error hover:bg-error/10 disabled:opacity-30 disabled:pointer-events-none shrink-0 transition-colors"
+                    title={
+                      roundDrafts.length <= 1
+                        ? '最後の1周は削除できません'
+                        : 'この周回を削除'
+                    }
+                    aria-label="周回を削除"
                   >
-                    {allInkHidden ? (
-                      <>
-                        <EyeOff className="w-3.5 h-3.5" />
-                        ペン隠中
-                      </>
-                    ) : (
-                      <>
-                        <Eye className="w-3.5 h-3.5" />
-                        ペン表示
-                      </>
-                    )}
+                    <Trash2 className="w-4 h-4" />
                   </button>
-                )}
+                </div>
+              ))}
+
+              <div className="flex items-center justify-end gap-1.5 pt-0.5">
                 <button
                   type="button"
-                  onClick={handleToggleEditRounds}
-                  className={`h-8 px-2.5 rounded-lg text-xs font-medium text-primary flex items-center gap-1 transition-colors ${
-                    editingRounds
-                      ? 'bg-primary/20'
-                      : 'bg-primary/10 hover:bg-primary/18'
-                  }`}
+                  onClick={() => setEditingRounds(false)}
+                  className="btn btn-ghost btn-sm"
                 >
-                  <Pencil className="w-3.5 h-3.5" />
-                  編集
+                  キャンセル
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleSaveRounds()}
+                  className="btn btn-primary btn-sm"
+                >
+                  保存
                 </button>
               </div>
             </div>
-
-            {editingRounds ? (
-              <div className="space-y-2">
-                {roundDrafts.map((draft, idx) => (
-                  <div
-                    key={draft.original}
-                    className="flex items-center gap-1.5 rounded-xl border border-base-300 bg-base-200/40 p-2"
-                  >
-                    <input
-                      type="text"
-                      value={draft.value}
-                      onChange={(e) => updateRoundDraft(idx, e.target.value)}
-                      placeholder={`${idx + 1}周目`}
-                      className="flex-1 h-9 px-3 rounded-lg border border-base-300 bg-base-100 text-sm focus:outline-none focus:border-primary"
-                    />
-                    <button
-                      type="button"
-                      disabled={roundDrafts.length <= 1}
-                      onClick={() => removeRoundDraft(idx)}
-                      className="w-8 h-9 rounded-lg flex items-center justify-center text-base-content/55 hover:text-error hover:bg-error/10 disabled:opacity-30 disabled:pointer-events-none shrink-0 transition-colors"
-                      title={
-                        roundDrafts.length <= 1
-                          ? '最後の1周は削除できません'
-                          : 'この周回を削除'
-                      }
-                      aria-label="周回を削除"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
-
-                <div className="flex items-center justify-end gap-1.5 pt-0.5">
+          ) : (
+            <div className="space-y-2.5">
+              {workbook.layers.map((layer) => {
+                const isActive = activeRound === layer;
+                const stats = roundStatsMap.get(layer) ?? { done: 0, total: 0, pct: 0 };
+                return (
                   <button
+                    key={layer}
                     type="button"
-                    onClick={() => setEditingRounds(false)}
-                    className="btn btn-ghost btn-sm"
+                    onClick={() => handleSelectRound(layer)}
+                    className={`relative w-full overflow-hidden rounded-2xl border px-4 py-3.5 text-left transition-colors ${
+                      isActive
+                        ? 'border-primary/45 bg-primary/[0.04] hover:bg-primary/[0.08]'
+                        : 'border-base-300 bg-base-100 hover:bg-base-200/50'
+                    }`}
                   >
-                    キャンセル
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleSaveRounds()}
-                    className="btn btn-primary btn-sm"
-                  >
-                    保存
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div className="space-y-1.5">
-                  {workbook.layers.map((layer) => {
-                    const isActive = activeRound === layer;
-                    const isHidden = hiddenLayers.includes(layer);
-                    const stats = roundStatsMap.get(layer);
-                    return (
-                      <div
-                        key={layer}
-                        className={`flex items-center justify-between gap-1.5 px-3 py-2 rounded-xl text-sm transition-colors border ${
-                          isActive
-                            ? 'bg-primary/10 border-primary/35 text-primary font-semibold'
-                            : 'border-transparent hover:bg-base-200 text-base-content/85'
+                    <div className="flex items-center justify-between gap-2.5">
+                      <span
+                        className={`text-[15px] font-semibold truncate ${
+                          isActive ? 'text-primary' : 'text-base-content'
                         }`}
                       >
-                        <button
-                          type="button"
-                          onClick={() => handleSelectRound(layer)}
-                          className="flex-1 min-w-0 flex items-center justify-between gap-2 text-left"
+                        {layer}
+                      </span>
+                      {stats.total > 0 && (
+                        <span
+                          className={`text-xs font-mono shrink-0 ${
+                            isActive ? 'text-primary/80 font-semibold' : 'text-base-content/55'
+                          }`}
                         >
-                          <span className="truncate">{layer}</span>
-                          {stats && stats.total > 0 && (
-                            <span
-                              className={`text-xs font-mono shrink-0 ${
-                                isActive ? 'text-primary/80' : 'text-base-content/50'
-                              }`}
-                            >
-                              {stats.done}/{stats.total}
-                            </span>
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => toggleLayerVisibility(layer)}
-                          className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-base-300/60 shrink-0 transition-colors"
-                          title={isHidden ? 'ペン書き込みを表示' : 'ペン書き込みを隠す'}
-                          aria-label={isHidden ? 'ペン書き込みを表示' : 'ペン書き込みを隠す'}
-                        >
-                          {isHidden ? (
-                            <EyeOff className="w-4 h-4 text-base-content/35" />
-                          ) : (
-                            <Eye className="w-4 h-4 text-base-content/65" />
-                          )}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
+                          {stats.done}/{stats.total}
+                        </span>
+                      )}
+                    </div>
 
-                {/* Add New Round with Fresh / Carry-Done Mode Toggle */}
-                <form onSubmit={handleAddRound} className="space-y-2 pt-1.5">
+                    {/* Subtle bottom progress bar (matching TOC unit cards) */}
+                    {stats.total > 0 && (
+                      <div className="absolute left-0 right-0 bottom-0 h-[3px] bg-base-200">
+                        <div
+                          className="h-full bg-emerald-500/70 transition-all duration-300"
+                          style={{ width: `${stats.pct}%` }}
+                        />
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+
+              {/* Collapsible Add New Round */}
+              {showAddRoundForm ? (
+                <form
+                  onSubmit={handleAddRound}
+                  className="rounded-2xl border border-base-300 bg-base-200/40 p-3 space-y-2.5"
+                >
                   <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-base-200 border border-base-300">
                     <button
                       type="button"
@@ -728,28 +671,48 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
                     </button>
                   </div>
 
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={newRoundName}
-                      onChange={(e) => setNewRoundName(e.target.value)}
-                      placeholder={`${workbook.layers.length + 1}周目`}
-                      className="input input-bordered input-sm flex-1 text-sm"
-                    />
+                  <input
+                    type="text"
+                    autoFocus
+                    value={newRoundName}
+                    onChange={(e) => setNewRoundName(e.target.value)}
+                    placeholder={`${workbook.layers.length + 1}周目`}
+                    className="input input-bordered input-sm w-full text-sm bg-base-100"
+                  />
+
+                  <div className="flex justify-end gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAddRoundForm(false);
+                        setNewRoundName('');
+                      }}
+                      className="btn btn-ghost btn-sm"
+                    >
+                      キャンセル
+                    </button>
                     <button
                       type="submit"
                       disabled={addingRound}
                       className="btn btn-primary btn-sm px-3 gap-1"
-                      title="新しい周回を追加"
                     >
-                      <Plus className="w-4 h-4" />
+                      <Plus className="w-3.5 h-3.5" />
                       追加
                     </button>
                   </div>
                 </form>
-              </>
-            )}
-          </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowAddRoundForm(true)}
+                  className="w-full h-11 rounded-2xl border border-dashed border-base-300 hover:border-primary/45 hover:bg-base-200/50 text-sm font-medium text-base-content/65 hover:text-primary flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>周回を追加</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Fixed Footer: Import Index / Answers */}
@@ -758,9 +721,9 @@ export function TopBar({ workbook, problems, pageStates, onOpenImport }: TopBarP
             type="button"
             onClick={() => {
               setMenuOpen(false);
-              setEditingPage(false);
               setEditingTitle(false);
               setEditingRounds(false);
+              setShowAddRoundForm(false);
               onOpenImport();
             }}
             className="w-full h-11 px-3.5 rounded-xl bg-primary/10 hover:bg-primary/18 text-primary text-sm font-medium flex items-center justify-center gap-2 transition-colors"
