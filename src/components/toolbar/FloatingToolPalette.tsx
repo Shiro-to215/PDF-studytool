@@ -391,6 +391,7 @@ export const FloatingToolPalette = forwardRef<
     markerColor,
     penSizeIndex,
     markerSizeIndex,
+    eraserSizeIndex,
     activeLayer,
     canUndo,
     canRedo,
@@ -400,6 +401,7 @@ export const FloatingToolPalette = forwardRef<
     setMarkerColor,
     setPenSizeIndex,
     setMarkerSizeIndex,
+    setEraserSizeIndex,
   } = useToolStore();
 
   const {
@@ -419,7 +421,7 @@ export const FloatingToolPalette = forwardRef<
   const [boundsSize, setBoundsSize] = useState({ w: 800, h: 600 });
   const [activePopover, setActivePopover] = useState<{
     kind: 'size' | 'color';
-    tool: 'pen' | 'marker';
+    tool: 'pen' | 'marker' | 'eraser';
     anchorX: number;
     anchorY: number;
     dock: DockEdge;
@@ -515,6 +517,7 @@ export const FloatingToolPalette = forwardRef<
       if (
         penBtnRef.current?.contains(target) ||
         markerBtnRef.current?.contains(target) ||
+        eraserBtnRef.current?.contains(target) ||
         colorBtnRef.current?.contains(target)
       ) {
         return;
@@ -1134,9 +1137,14 @@ export const FloatingToolPalette = forwardRef<
   // Rotate collapsed icon + color bar 90° toward screen center when expanding vertically (left/right)
   const collapsedIconDeg = expandDock === 'left' ? -90 : expandDock === 'right' ? 90 : 0;
 
-  // Smooth (non-bouncing) sliding indicator for stroke width popover
+  // Smooth (non-bouncing) sliding indicator for stroke width / eraser size popover
   const activeSizeTool = activePopover?.kind === 'size' ? activePopover.tool : null;
-  const activeSizeIdx = activeSizeTool === 'marker' ? markerSizeIndex : penSizeIndex;
+  const activeSizeIdx =
+    activeSizeTool === 'marker'
+      ? markerSizeIndex
+      : activeSizeTool === 'eraser'
+        ? eraserSizeIndex
+        : penSizeIndex;
   useLayoutEffect(() => {
     if (!activeSizeTool || paletteState.collapsed) {
       sizePillPrevRef.current = null;
@@ -1204,12 +1212,6 @@ export const FloatingToolPalette = forwardRef<
     nextTool: 'pen' | 'marker' | 'eraser',
     btnEl: HTMLButtonElement | null,
   ) => {
-    if (nextTool === 'eraser') {
-      setTool('eraser');
-      setActivePopover(null);
-      return;
-    }
-
     // 1st tap: switch tool normally without opening popover
     if (tool !== nextTool) {
       setTool(nextTool);
@@ -1217,7 +1219,7 @@ export const FloatingToolPalette = forwardRef<
       return;
     }
 
-    // 2nd tap on already-selected pen/marker: toggle Freeform-style thickness popover
+    // 2nd tap on already-selected tool: toggle Freeform-style size popover
     if (activePopover?.kind === 'size' && activePopover.tool === nextTool) {
       setActivePopover(null);
       return;
@@ -1460,13 +1462,13 @@ export const FloatingToolPalette = forwardRef<
             <button
               ref={eraserBtnRef}
               type="button"
-              onClick={() => handleToolButtonClick('eraser', null)}
+              onClick={() => handleToolButtonClick('eraser', eraserBtnRef.current)}
               className={`relative z-10 w-11 h-11 rounded-full flex items-center justify-center transition-colors duration-200 ${
                 tool === 'eraser'
                   ? 'text-primary-content'
                   : 'hover:bg-base-200/70 text-base-content/75'
               }`}
-              title="消しゴム（ストローク単位）"
+              title="消しゴム（もう一度タップで大きさ調整）"
             >
               <Eraser className="w-[22px] h-[22px]" />
             </button>
@@ -1620,9 +1622,15 @@ export const FloatingToolPalette = forwardRef<
                   className="absolute top-0 left-0 z-0 w-11 h-11 rounded-full bg-primary/12 ring-2 ring-primary pointer-events-none"
                 />
                 {SIZE_OPTIONS.map((opt, idx) => {
+                  const isEraserPopover = activePopover.tool === 'eraser';
                   const dotPx = idx === 0 ? 7 : idx === 1 ? 13 : 19;
+                  const ringPx = idx === 0 ? 11 : idx === 1 ? 17 : 24;
                   const currentSizeIdx =
-                    activePopover.tool === 'marker' ? markerSizeIndex : penSizeIndex;
+                    activePopover.tool === 'marker'
+                      ? markerSizeIndex
+                      : isEraserPopover
+                        ? eraserSizeIndex
+                        : penSizeIndex;
                   const active = currentSizeIdx === idx;
                   return (
                     <button
@@ -1631,10 +1639,16 @@ export const FloatingToolPalette = forwardRef<
                         sizeBtnRefs.current[idx] = el;
                       }}
                       type="button"
-                      title={`太さ：${opt.label}`}
+                      title={
+                        isEraserPopover
+                          ? `大きさ：${opt.eraserLabel}（${opt.eraser}px）`
+                          : `太さ：${opt.label}`
+                      }
                       onClick={() => {
                         if (activePopover.tool === 'marker') {
                           setMarkerSizeIndex(idx as 0 | 1 | 2);
+                        } else if (isEraserPopover) {
+                          setEraserSizeIndex(idx as 0 | 1 | 2);
                         } else {
                           setPenSizeIndex(idx as 0 | 1 | 2);
                         }
@@ -1643,12 +1657,23 @@ export const FloatingToolPalette = forwardRef<
                         active ? '' : 'hover:bg-base-200/70'
                       }`}
                     >
-                      <span
-                        className={`rounded-full block transition-colors duration-200 ${
-                          active ? 'bg-primary' : 'bg-base-content/80'
-                        }`}
-                        style={{ width: dotPx, height: dotPx }}
-                      />
+                      {isEraserPopover ? (
+                        <span
+                          className={`rounded-full block border-2 transition-colors duration-200 ${
+                            active
+                              ? 'border-primary bg-primary/15'
+                              : 'border-base-content/75 bg-base-content/5'
+                          }`}
+                          style={{ width: ringPx, height: ringPx }}
+                        />
+                      ) : (
+                        <span
+                          className={`rounded-full block transition-colors duration-200 ${
+                            active ? 'bg-primary' : 'bg-base-content/80'
+                          }`}
+                          style={{ width: dotPx, height: dotPx }}
+                        />
+                      )}
                     </button>
                   );
                 })}

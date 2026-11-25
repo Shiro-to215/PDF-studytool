@@ -23,7 +23,12 @@ export interface BookGestureCallbacks {
   stageRef: RefObject<HTMLElement | null>;
   interactionMode: InteractionMode;
   getZoomPan: () => ZoomPanState;
-  onDrawStart: (clientX: number, clientY: number, pressure: number) => boolean;
+  onDrawStart: (
+    clientX: number,
+    clientY: number,
+    pressure: number,
+    pointerType: 'mouse' | 'pen' | 'touch',
+  ) => boolean;
   onDrawMovePoints: (samples: DrawMoveSample[]) => void;
   onDrawEnd: () => void;
   onFlipStart: (clientX: number) => void;
@@ -34,6 +39,8 @@ export interface BookGestureCallbacks {
   onZoomPanEnd: () => void;
   onWheelZoomAt: (factor: number, clientX: number, clientY: number) => void;
   onWheelPan: (dx: number, dy: number) => void;
+  onHoverMove?: (clientX: number, clientY: number, pointerType: 'mouse' | 'pen') => void;
+  onHoverEnd?: () => void;
 }
 
 type TouchWithType = Touch & { touchType?: 'direct' | 'stylus' };
@@ -156,6 +163,7 @@ export function useBookGestures(callbacks: BookGestureCallbacks) {
       const fingers = getFingerTouches(e.touches);
 
       if (fingers.length >= 2) {
+        cb.onHoverEnd?.();
         if (touchModeRef.current === 'flip') {
           cb.onFlipCancel(true);
           touchFlipIdRef.current = null;
@@ -187,7 +195,7 @@ export function useBookGestures(callbacks: BookGestureCallbacks) {
             panY: currentZoom.panY,
           };
         } else if (cb.interactionMode === 'draw') {
-          const started = cb.onDrawStart(f.clientX, f.clientY, 0.5);
+          const started = cb.onDrawStart(f.clientX, f.clientY, 0.5, 'touch');
           if (started) {
             touchModeRef.current = 'draw';
             touchDrawIdRef.current = f.identifier;
@@ -415,7 +423,7 @@ export function useBookGestures(callbacks: BookGestureCallbacks) {
         activePenIdRef.current = null;
       }
 
-      const started = cb.onDrawStart(e.clientX, e.clientY, e.pressure || 0.5);
+      const started = cb.onDrawStart(e.clientX, e.clientY, e.pressure || 0.5, 'pen');
       if (started) {
         isPenDrawingRef.current = true;
         activePenIdRef.current = e.pointerId;
@@ -426,12 +434,13 @@ export function useBookGestures(callbacks: BookGestureCallbacks) {
     // Mouse input
     const currentZoom = cb.getZoomPan();
     if (cb.interactionMode === 'draw') {
-      const started = cb.onDrawStart(e.clientX, e.clientY, 0.5);
+      const started = cb.onDrawStart(e.clientX, e.clientY, 0.5, 'mouse');
       if (started) {
         mouseModeRef.current = 'draw';
         mousePointerIdRef.current = e.pointerId;
       }
     } else if (currentZoom.scale > 1.02) {
+      cb.onHoverEnd?.();
       mouseModeRef.current = 'pan';
       mousePointerIdRef.current = e.pointerId;
       mousePanOriginRef.current = {
@@ -441,6 +450,7 @@ export function useBookGestures(callbacks: BookGestureCallbacks) {
         panY: currentZoom.panY,
       };
     } else {
+      cb.onHoverEnd?.();
       mouseModeRef.current = 'flip';
       mousePointerIdRef.current = e.pointerId;
       mouseLastFlipSampleRef.current = { x: e.clientX, time: performance.now() };
@@ -453,9 +463,19 @@ export function useBookGestures(callbacks: BookGestureCallbacks) {
     if (e.pointerType === 'touch') return;
 
     const cb = callbacksRef.current;
+    const target = e.target as HTMLElement | null;
 
     if (e.pointerType === 'pen') {
-      if (!isPenDrawingRef.current || activePenIdRef.current !== e.pointerId) return;
+      if (!isPenDrawingRef.current || activePenIdRef.current !== e.pointerId) {
+        if (!isPenDrawingRef.current) {
+          if (target?.closest('button, a, input, textarea, select')) {
+            cb.onHoverEnd?.();
+          } else {
+            cb.onHoverMove?.(e.clientX, e.clientY, 'pen');
+          }
+        }
+        return;
+      }
       lastPenTimeRef.current = performance.now();
       // Always use the primary pointermove coordinates rather than getCoalescedEvents():
       // getCoalescedEvents() is SecureContext-only (HTTPS) and on iPadOS Safari 18+
@@ -468,7 +488,16 @@ export function useBookGestures(callbacks: BookGestureCallbacks) {
     }
 
     // Mouse move
-    if (mousePointerIdRef.current !== e.pointerId) return;
+    if (mousePointerIdRef.current !== e.pointerId) {
+      if (mouseModeRef.current === 'none') {
+        if (target?.closest('button, a, input, textarea, select')) {
+          cb.onHoverEnd?.();
+        } else {
+          cb.onHoverMove?.(e.clientX, e.clientY, 'mouse');
+        }
+      }
+      return;
+    }
     if (mouseModeRef.current === 'draw') {
       cb.onDrawMovePoints([{ clientX: e.clientX, clientY: e.clientY, pressure: 0.5 }]);
     } else if (mouseModeRef.current === 'pan') {
@@ -543,11 +572,19 @@ export function useBookGestures(callbacks: BookGestureCallbacks) {
     }
   };
 
+  const onPointerLeave = (e: ReactPointerEvent<HTMLElement>) => {
+    if (e.pointerType === 'touch') return;
+    if (!isPenDrawingRef.current && mouseModeRef.current === 'none') {
+      callbacksRef.current.onHoverEnd?.();
+    }
+  };
+
   return {
     onPointerDown,
     onPointerMove,
     onPointerUp: (e: ReactPointerEvent<HTMLElement>) => cleanupPointer(e, false),
     onPointerCancel: (e: ReactPointerEvent<HTMLElement>) => cleanupPointer(e, true),
+    onPointerLeave,
     onWheel,
   };
 }

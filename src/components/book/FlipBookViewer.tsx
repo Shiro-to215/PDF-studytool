@@ -12,7 +12,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { PageStrokes, Stroke, StrokePoint } from '../../types/models';
 import { createId, savePageStrokes } from '../../db/database';
 import { getIdealRenderWidth, PdfDocumentManager } from '../../utils/pdfEngine';
-import { isPointNearStroke } from '../../utils/strokeRenderer';
+import { isCircleTouchingStroke } from '../../utils/strokeRenderer';
 import {
   recognizeHoldShape,
   sampleShapeToBookPoints,
@@ -123,6 +123,20 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
     const frontShadeRef = useRef<HTMLDivElement | null>(null);
     const backShadeRef = useRef<HTMLDivElement | null>(null);
     const underShadowRef = useRef<HTMLDivElement | null>(null);
+    const eraserCursorRef = useRef<HTMLDivElement | null>(null);
+    const eraserCursorStateRef = useRef<{
+      visible: boolean;
+      active: boolean;
+      pointerType: 'mouse' | 'pen' | 'touch';
+      clientX: number;
+      clientY: number;
+    }>({
+      visible: false,
+      active: false,
+      pointerType: 'mouse',
+      clientX: 0,
+      clientY: 0,
+    });
 
     const [stageSize, setStageSize] = useState({ width: 800, height: 600 });
     const [committedScale, setCommittedScale] = useState(1);
@@ -146,11 +160,15 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       markerColor,
       penSizeIndex,
       markerSizeIndex,
+      eraserSizeIndex,
       activeLayer,
       pushHistory,
       popUndo,
       popRedo,
     } = useToolStore();
+
+    const eraserDiameterPx = SIZE_OPTIONS[eraserSizeIndex].eraser;
+    const eraserRadiusPx = eraserDiameterPx / 2;
 
     // Measure stage dimensions for responsive sizing
     useEffect(() => {
@@ -344,8 +362,13 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
           } else {
             el.style.transform = `translate3d(${px.toFixed(2)}px, ${py.toFixed(2)}px, 0) scale(${residualScale.toFixed(4)})`;
           }
-          el.style.cursor =
-            interactionMode === 'draw' ? 'crosshair' : s > 1.02 ? 'grab' : 'default';
+          el.style.cursor = eraserCursorStateRef.current.visible
+            ? 'none'
+            : interactionMode === 'draw'
+              ? 'crosshair'
+              : s > 1.02
+                ? 'grab'
+                : 'default';
         }
       },
       [interactionMode],
@@ -944,7 +967,88 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       initialByPage: PageStrokesSnapshot;
       currentByPage: PageStrokesSnapshot;
       changed: boolean;
+      lastClient: { x: number; y: number } | null;
     } | null>(null);
+
+    const syncStageCursor = useCallback(() => {
+      const zoomEl = zoomWrapperRef.current;
+      if (!zoomEl) return;
+      zoomEl.style.cursor = eraserCursorStateRef.current.visible
+        ? 'none'
+        : interactionMode === 'draw'
+          ? 'crosshair'
+          : liveZoomRef.current.scale > 1.02
+            ? 'grab'
+            : 'default';
+    }, [interactionMode]);
+
+    const hideEraserCursor = useCallback(() => {
+      if (!eraserCursorStateRef.current.visible && !eraserCursorStateRef.current.active) return;
+      eraserCursorStateRef.current.visible = false;
+      eraserCursorStateRef.current.active = false;
+      const el = eraserCursorRef.current;
+      if (el) {
+        el.style.opacity = '0';
+      }
+      syncStageCursor();
+    }, [syncStageCursor]);
+
+    const showEraserCursorAt = useCallback(
+      (
+        clientX: number,
+        clientY: number,
+        active: boolean,
+        pointerType: 'mouse' | 'pen' | 'touch',
+      ) => {
+        const stageEl = stageRef.current;
+        const el = eraserCursorRef.current;
+        if (!stageEl || !el) return;
+        const stageRect = stageEl.getBoundingClientRect();
+        const x = clientX - stageRect.left - eraserRadiusPx;
+        const y = clientY - stageRect.top - eraserRadiusPx;
+
+        eraserCursorStateRef.current = {
+          visible: true,
+          active,
+          pointerType,
+          clientX,
+          clientY,
+        };
+        el.style.width = `${eraserDiameterPx}px`;
+        el.style.height = `${eraserDiameterPx}px`;
+        el.style.transform = `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0)`;
+        el.style.backgroundColor = active ? 'rgba(24, 24, 27, 0.11)' : 'rgba(24, 24, 27, 0.05)';
+        el.style.opacity = '1';
+        syncStageCursor();
+      },
+      [eraserDiameterPx, eraserRadiusPx, syncStageCursor],
+    );
+
+    useLayoutEffect(() => {
+      const state = eraserCursorStateRef.current;
+      if (tool !== 'eraser') {
+        hideEraserCursor();
+        return;
+      }
+      if (!state.active && state.pointerType === 'mouse' && interactionMode !== 'draw') {
+        hideEraserCursor();
+        return;
+      }
+      const el = eraserCursorRef.current;
+      if (el) {
+        el.style.width = `${eraserDiameterPx}px`;
+        el.style.height = `${eraserDiameterPx}px`;
+      }
+      if (state.visible) {
+        showEraserCursorAt(state.clientX, state.clientY, state.active, state.pointerType);
+      }
+    }, [tool, interactionMode, eraserDiameterPx, hideEraserCursor, showEraserCursorAt]);
+
+    useEffect(() => {
+      if (flipSession !== null) {
+        hideEraserCursor();
+      }
+    }, [flipSession, hideEraserCursor]);
 
     const clearHoldTimer = useCallback(() => {
       if (holdTimerRef.current !== null) {
@@ -1048,12 +1152,53 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       [spreadMode, layout],
     );
 
-    const eraseAtPoint = useCallback(
+    const eraseSingleSample = useCallback(
       (clientX: number, clientY: number) => {
         const work = eraserWorkingRef.current;
-        if (!work) return;
-        const pt = resolveBookPoint(clientX, clientY, false);
-        if (!pt || pt.pageNumber === null) return;
+        const el = bookRef.current;
+        if (!work || !el) return;
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+
+        // Reject only when the entire eraser circle lies outside the book rectangle
+        if (
+          clientX + eraserRadiusPx < rect.left ||
+          clientX - eraserRadiusPx > rect.right ||
+          clientY + eraserRadiusPx < rect.top ||
+          clientY - eraserRadiusPx > rect.bottom
+        ) {
+          return;
+        }
+
+        const slots = spreadMode === 'double' ? 2 : 1;
+        const visualPageW = rect.width / slots;
+        const visualPageH = rect.height;
+        const cyNorm = (clientY - rect.top) / visualPageH;
+
+        const candidates: Array<{ pageNumber: number; cxNorm: number }> = [];
+        if (spreadMode === 'single') {
+          if (layout.leftPage !== null) {
+            candidates.push({
+              pageNumber: layout.leftPage,
+              cxNorm: (clientX - rect.left) / visualPageW,
+            });
+          }
+        } else {
+          if (layout.leftPage !== null && clientX - eraserRadiusPx <= rect.left + visualPageW) {
+            candidates.push({
+              pageNumber: layout.leftPage,
+              cxNorm: (clientX - rect.left) / visualPageW,
+            });
+          }
+          if (layout.rightPage !== null && clientX + eraserRadiusPx >= rect.left + visualPageW) {
+            candidates.push({
+              pageNumber: layout.rightPage,
+              cxNorm: (clientX - (rect.left + visualPageW)) / visualPageW,
+            });
+          }
+        }
+
+        if (candidates.length === 0) return;
 
         const ensurePageLoaded = (pageNum: number): Stroke[] => {
           if (!(pageNum in work.currentByPage)) {
@@ -1064,56 +1209,96 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
           return work.currentByPage[pageNum];
         };
 
-        const currentPageStrokes = ensurePageLoaded(pt.pageNumber);
         const hitGroupIds = new Set<string>();
-        let hitAny = false;
-        const directHitIndices = new Set<number>();
+        const directHitsByPage = new Map<number, Set<number>>();
 
-        for (let i = 0; i < currentPageStrokes.length; i++) {
-          const s = currentPageStrokes[i];
-          if (isPointNearStroke(pt.nx, pt.ny, s)) {
-            hitAny = true;
-            directHitIndices.add(i);
-            if (s.groupId) {
-              hitGroupIds.add(s.groupId);
+        for (const cand of candidates) {
+          const pageStrokes = ensurePageLoaded(cand.pageNumber);
+          for (let i = 0; i < pageStrokes.length; i++) {
+            const s = pageStrokes[i];
+            if (
+              isCircleTouchingStroke(
+                cand.cxNorm,
+                cyNorm,
+                s,
+                visualPageW,
+                visualPageH,
+                eraserRadiusPx,
+              )
+            ) {
+              let set = directHitsByPage.get(cand.pageNumber);
+              if (!set) {
+                set = new Set<number>();
+                directHitsByPage.set(cand.pageNumber, set);
+              }
+              set.add(i);
+              if (s.groupId) {
+                hitGroupIds.add(s.groupId);
+              }
             }
           }
         }
 
-        if (!hitAny) return;
+        if (directHitsByPage.size === 0 && hitGroupIds.size === 0) return;
 
-        // Erase hit strokes + any same-page split segments sharing the same groupId
-        const nextCurrent = currentPageStrokes.filter(
-          (s, idx) => !directHitIndices.has(idx) && (!s.groupId || !hitGroupIds.has(s.groupId)),
-        );
-        if (nextCurrent.length !== currentPageStrokes.length) {
-          work.currentByPage[pt.pageNumber] = nextCurrent;
-          work.changed = true;
-          commitLayerStrokes(pt.pageNumber, activeLayer, nextCurrent);
+        const pagesToUpdate = new Set<number>(directHitsByPage.keys());
+        if (spreadMode === 'double' && hitGroupIds.size > 0) {
+          if (layout.leftPage !== null) pagesToUpdate.add(layout.leftPage);
+          if (layout.rightPage !== null) pagesToUpdate.add(layout.rightPage);
         }
 
-        // In double spread mode, also erase paired segments on the sibling page sharing the groupId
-        if (spreadMode === 'double' && hitGroupIds.size > 0) {
-          const otherPage =
-            pt.pageNumber === layout.leftPage ? layout.rightPage : layout.leftPage;
-          if (otherPage !== null) {
-            const otherStrokes = ensurePageLoaded(otherPage);
-            const nextOther = otherStrokes.filter(
-              (s) => !s.groupId || !hitGroupIds.has(s.groupId),
-            );
-            if (nextOther.length !== otherStrokes.length) {
-              work.currentByPage[otherPage] = nextOther;
-              work.changed = true;
-              commitLayerStrokes(otherPage, activeLayer, nextOther);
-            }
+        for (const pageNum of pagesToUpdate) {
+          const currentPageStrokes = ensurePageLoaded(pageNum);
+          const directHitIndices = directHitsByPage.get(pageNum);
+          const nextCurrent = currentPageStrokes.filter(
+            (s, idx) =>
+              !(directHitIndices && directHitIndices.has(idx)) &&
+              (!s.groupId || !hitGroupIds.has(s.groupId)),
+          );
+          if (nextCurrent.length !== currentPageStrokes.length) {
+            work.currentByPage[pageNum] = nextCurrent;
+            work.changed = true;
+            commitLayerStrokes(pageNum, activeLayer, nextCurrent);
           }
         }
       },
-      [resolveBookPoint, getLayerStrokes, activeLayer, commitLayerStrokes, spreadMode, layout],
+      [eraserRadiusPx, spreadMode, layout, getLayerStrokes, activeLayer, commitLayerStrokes],
+    );
+
+    const eraseAtPoint = useCallback(
+      (clientX: number, clientY: number) => {
+        const work = eraserWorkingRef.current;
+        if (!work) return;
+
+        if (!work.lastClient) {
+          work.lastClient = { x: clientX, y: clientY };
+          eraseSingleSample(clientX, clientY);
+          return;
+        }
+
+        const prev = work.lastClient;
+        const dist = Math.hypot(clientX - prev.x, clientY - prev.y);
+        const stepPx = Math.max(3, eraserRadiusPx * 0.55);
+        const steps = Math.max(1, Math.min(64, Math.ceil(dist / stepPx)));
+        for (let i = 1; i <= steps; i++) {
+          const t = i / steps;
+          eraseSingleSample(
+            prev.x + (clientX - prev.x) * t,
+            prev.y + (clientY - prev.y) * t,
+          );
+        }
+        work.lastClient = { x: clientX, y: clientY };
+      },
+      [eraserRadiusPx, eraseSingleSample],
     );
 
     const handleDrawStart = useCallback(
-      (clientX: number, clientY: number, pressure: number): boolean => {
+      (
+        clientX: number,
+        clientY: number,
+        pressure: number,
+        pointerType: 'mouse' | 'pen' | 'touch',
+      ): boolean => {
         if (flipSessionRef.current) return false;
         const pt = resolveBookPoint(clientX, clientY, false);
         if (!pt || pt.pageNumber === null) return false;
@@ -1123,7 +1308,9 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
             initialByPage: {},
             currentByPage: {},
             changed: false,
+            lastClient: null,
           };
+          showEraserCursorAt(clientX, clientY, true, pointerType);
           eraseAtPoint(clientX, clientY);
           return true;
         }
@@ -1153,6 +1340,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         resolveBookPoint,
         tool,
         eraseAtPoint,
+        showEraserCursorAt,
         clearHoldTimer,
         penSizeIndex,
         markerSizeIndex,
@@ -1167,6 +1355,13 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         if (samples.length === 0) return;
 
         if (tool === 'eraser') {
+          const last = samples[samples.length - 1];
+          showEraserCursorAt(
+            last.clientX,
+            last.clientY,
+            true,
+            eraserCursorStateRef.current.pointerType,
+          );
           for (const sample of samples) {
             eraseAtPoint(sample.clientX, sample.clientY);
           }
@@ -1232,7 +1427,16 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
           }
         }
       },
-      [tool, eraseAtPoint, resolveBookPoint, bookW, bookH, buildDraftByPage, scheduleHoldSnap],
+      [
+        tool,
+        eraseAtPoint,
+        showEraserCursorAt,
+        resolveBookPoint,
+        bookW,
+        bookH,
+        buildDraftByPage,
+        scheduleHoldSnap,
+      ],
     );
 
     const handleDrawEnd = useCallback(() => {
@@ -1245,6 +1449,18 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
           const key = `${workbookId}:${activeLayer}`;
           pushHistory(key, work.initialByPage);
         }
+        const cursorState = eraserCursorStateRef.current;
+        if (
+          cursorState.pointerType === 'mouse' &&
+          interactionMode === 'draw'
+        ) {
+          const pt = resolveBookPoint(cursorState.clientX, cursorState.clientY, false);
+          if (pt && pt.pageNumber !== null) {
+            showEraserCursorAt(cursorState.clientX, cursorState.clientY, false, 'mouse');
+            return;
+          }
+        }
+        hideEraserCursor();
         return;
       }
 
@@ -1308,6 +1524,10 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       layout.rightPage,
       getLayerStrokes,
       commitLayerStrokes,
+      interactionMode,
+      resolveBookPoint,
+      showEraserCursorAt,
+      hideEraserCursor,
     ]);
 
     // ===== Interactive Drag Flip Callbacks =====
@@ -1483,6 +1703,27 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       return () => window.removeEventListener('keydown', onKeyDown);
     }, [bindingDirection, triggerProgrammaticFlip, handleUndo, handleRedo]);
 
+    const handleHoverMove = useCallback(
+      (clientX: number, clientY: number, pointerType: 'mouse' | 'pen') => {
+        if (tool !== 'eraser' || flipSessionRef.current) {
+          hideEraserCursor();
+          return;
+        }
+        // Mouse only erases in 'draw' mode; Apple Pencil always erases even in 'flip' mode
+        if (pointerType === 'mouse' && interactionMode !== 'draw') {
+          hideEraserCursor();
+          return;
+        }
+        const pt = resolveBookPoint(clientX, clientY, false);
+        if (!pt || pt.pageNumber === null) {
+          hideEraserCursor();
+          return;
+        }
+        showEraserCursorAt(clientX, clientY, false, pointerType);
+      },
+      [tool, interactionMode, resolveBookPoint, showEraserCursorAt, hideEraserCursor],
+    );
+
     const gestureHandlers = useBookGestures({
       stageRef,
       interactionMode,
@@ -1498,6 +1739,8 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       onZoomPanEnd: handleZoomPanEnd,
       onWheelZoomAt: handleWheelZoomAt,
       onWheelPan: handleWheelPan,
+      onHoverMove: handleHoverMove,
+      onHoverEnd: hideEraserCursor,
     });
 
     const getStrokesForPage = (p: number | null) =>
@@ -1828,6 +2071,21 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
           </div>
         </div>
         </div>
+
+        {/* Live screen-space circular eraser outline (dual-contrast ring for white paper & dark ink) */}
+        <div
+          ref={eraserCursorRef}
+          aria-hidden="true"
+          className="absolute top-0 left-0 z-[25] rounded-full pointer-events-none will-change-transform"
+          style={{
+            width: eraserDiameterPx,
+            height: eraserDiameterPx,
+            opacity: 0,
+            border: '1.5px solid rgba(24, 24, 27, 0.82)',
+            boxShadow: '0 0 0 1.5px rgba(255, 255, 255, 0.92), 0 1px 4px rgba(15, 23, 42, 0.22)',
+            backgroundColor: 'rgba(24, 24, 27, 0.05)',
+          }}
+        />
       </div>
     );
   },

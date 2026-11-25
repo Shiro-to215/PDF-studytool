@@ -18,9 +18,9 @@ export const MARKER_COLOR_OPTIONS = [
 ] as const;
 
 export const SIZE_OPTIONS = [
-  { label: '細', pen: 2.2, marker: 12 },
-  { label: '中', pen: 3.6, marker: 20 },
-  { label: '太', pen: 5.5, marker: 30 },
+  { label: '細', eraserLabel: '小', pen: 2.2, marker: 12, eraser: 14 },
+  { label: '中', eraserLabel: '中', pen: 3.6, marker: 20, eraser: 28 },
+  { label: '太', eraserLabel: '大', pen: 5.5, marker: 30, eraser: 52 },
 ] as const;
 
 export type PageStrokesSnapshot = Record<number, Stroke[]>;
@@ -48,6 +48,7 @@ interface ToolStore {
   markerColor: string;
   penSizeIndex: 0 | 1 | 2;
   markerSizeIndex: 0 | 1 | 2;
+  eraserSizeIndex: 0 | 1 | 2;
   activeLayer: string;
   hiddenLayers: string[];
   allInkHidden: boolean;
@@ -60,6 +61,7 @@ interface ToolStore {
   setMarkerColor: (color: string) => void;
   setPenSizeIndex: (idx: 0 | 1 | 2) => void;
   setMarkerSizeIndex: (idx: 0 | 1 | 2) => void;
+  setEraserSizeIndex: (idx: 0 | 1 | 2) => void;
   setActiveLayer: (layer: string) => void;
   toggleLayerVisibility: (layer: string) => void;
   setAllInkHidden: (hidden: boolean) => void;
@@ -87,6 +89,7 @@ export const useToolStore = create<ToolStore>((set, get) => ({
   markerColor: '#fde047',
   penSizeIndex: 1,
   markerSizeIndex: 1,
+  eraserSizeIndex: 1,
   activeLayer: '1周目',
   hiddenLayers: [],
   allInkHidden: false,
@@ -100,6 +103,7 @@ export const useToolStore = create<ToolStore>((set, get) => ({
   setMarkerColor: (markerColor) => set({ markerColor, tool: 'marker' }),
   setPenSizeIndex: (penSizeIndex) => set({ penSizeIndex }),
   setMarkerSizeIndex: (markerSizeIndex) => set({ markerSizeIndex }),
+  setEraserSizeIndex: (eraserSizeIndex) => set({ eraserSizeIndex }),
   setActiveLayer: (activeLayer) =>
     set((s) => ({
       activeLayer,

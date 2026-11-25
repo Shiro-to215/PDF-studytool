@@ -202,3 +202,58 @@ export function isPointNearStroke(
 
   return false;
 }
+
+/**
+ * Exact screen-space Euclidean circle hit-test against a stroke so the visible circular
+ * eraser outline matches the actual erase boundary 1:1 across any page aspect ratio and zoom level.
+ */
+export function isCircleTouchingStroke(
+  cxNorm: number,
+  cyNorm: number,
+  stroke: Stroke,
+  visualPageW: number,
+  visualPageH: number,
+  eraserRadiusPx: number,
+): boolean {
+  const pts = stroke.points;
+  if (pts.length === 0 || visualPageW <= 0 || visualPageH <= 0) return false;
+
+  const screenScale = visualPageW / 700;
+  let strokeRadiusPx: number;
+  if (stroke.shapeKind === 'line' || stroke.shapeKind === 'ellipse') {
+    const lineW = Math.max(
+      stroke.tool === 'marker' ? 4 : 1.4,
+      stroke.size * screenScale * (stroke.tool === 'marker' ? 0.95 : 0.82),
+    );
+    strokeRadiusPx = lineW * 0.5;
+  } else if (stroke.tool === 'marker') {
+    strokeRadiusPx = Math.max(4, stroke.size * screenScale) * 0.5;
+  } else {
+    strokeRadiusPx = Math.max(1.2, stroke.size * screenScale) * 0.36;
+  }
+
+  const hitRadius = Math.max(1, eraserRadiusPx) + strokeRadiusPx;
+  const maxDistSq = hitRadius * hitRadius;
+  const ex = cxNorm * visualPageW;
+  const ey = cyNorm * visualPageH;
+
+  if (pts.length === 1) {
+    const dx = ex - pts[0][0] * visualPageW;
+    const dy = ey - pts[0][1] * visualPageH;
+    return dx * dx + dy * dy <= maxDistSq;
+  }
+
+  for (let i = 0; i < pts.length - 1; i++) {
+    const dSq = distToSegmentSq(
+      ex,
+      ey,
+      pts[i][0] * visualPageW,
+      pts[i][1] * visualPageH,
+      pts[i + 1][0] * visualPageW,
+      pts[i + 1][1] * visualPageH,
+    );
+    if (dSq <= maxDistSq) return true;
+  }
+
+  return false;
+}
