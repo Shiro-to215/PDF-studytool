@@ -5,6 +5,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
@@ -55,6 +56,19 @@ interface DragState {
   preview: SnapTarget | null;
 }
 
+interface PopoverItem {
+  id: number;
+  kind: 'size' | 'color';
+  tool: 'pen' | 'marker' | 'eraser';
+  anchorX: number;
+  anchorY: number;
+  dock: DockEdge;
+  /** Frozen selection snapshot used only while exiting so live store changes don't mutate a closing bubble */
+  frozenSizeIdx?: 0 | 1 | 2;
+  frozenColor?: string;
+}
+
+const POPOVER_EXIT_MS = 180;
 const PALETTE_STORAGE_KEY = 'paperwork-palette-state';
 
 function loadPaletteState(): PaletteState {
@@ -419,13 +433,12 @@ export const FloatingToolPalette = forwardRef<
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [dragEndNonce, setDragEndNonce] = useState(0);
   const [boundsSize, setBoundsSize] = useState({ w: 800, h: 600 });
-  const [activePopover, setActivePopover] = useState<{
-    kind: 'size' | 'color';
-    tool: 'pen' | 'marker' | 'eraser';
-    anchorX: number;
-    anchorY: number;
-    dock: DockEdge;
-  } | null>(null);
+  const [activePopover, setActivePopover] = useState<PopoverItem | null>(null);
+  const [exitingPopovers, setExitingPopovers] = useState<PopoverItem[]>([]);
+  const popoverSeqRef = useRef(0);
+  const activePopoverRef = useRef<PopoverItem | null>(null);
+  activePopoverRef.current = activePopover;
+  const exitTimersRef = useRef<Map<number, number>>(new Map());
 
   const paletteElRef = useRef<HTMLDivElement | null>(null);
   const contentElRef = useRef<HTMLDivElement | null>(null);
@@ -504,8 +517,82 @@ export const FloatingToolPalette = forwardRef<
       } catch {
         // Ignore
       }
+      for (const timerId of exitTimersRef.current.values()) {
+        window.clearTimeout(timerId);
+      }
+      exitTimersRef.current.clear();
     };
   }, []);
+
+  const clearPopoversImmediate = () => {
+    for (const timerId of exitTimersRef.current.values()) {
+      window.clearTimeout(timerId);
+    }
+    exitTimersRef.current.clear();
+    setActivePopover(null);
+    setExitingPopovers([]);
+  };
+
+  const enqueueExit = (item: PopoverItem) => {
+    const frozenSizeIdx: 0 | 1 | 2 =
+      item.tool === 'marker'
+        ? markerSizeIndex
+        : item.tool === 'eraser'
+          ? eraserSizeIndex
+          : penSizeIndex;
+    const frozenColor = item.tool === 'marker' ? markerColor : penColor;
+    const exitingItem: PopoverItem = {
+      ...item,
+      frozenSizeIdx,
+      frozenColor,
+    };
+
+    const existingTimer = exitTimersRef.current.get(item.id);
+    if (existingTimer !== undefined) {
+      window.clearTimeout(existingTimer);
+    }
+
+    setExitingPopovers((prev) => [
+      ...prev.filter((p) => p.id !== item.id),
+      exitingItem,
+    ]);
+
+    const timerId = window.setTimeout(() => {
+      exitTimersRef.current.delete(item.id);
+      setExitingPopovers((prev) => prev.filter((p) => p.id !== item.id));
+    }, POPOVER_EXIT_MS);
+    exitTimersRef.current.set(item.id, timerId);
+  };
+
+  const closePopoverAnimated = () => {
+    const cur = activePopoverRef.current;
+    if (!cur) return;
+    enqueueExit(cur);
+    setActivePopover(null);
+  };
+
+  const openPopoverAnimated = (next: Omit<PopoverItem, 'id'>) => {
+    const prev = activePopoverRef.current;
+    if (prev) {
+      enqueueExit(prev);
+    }
+    setExitingPopovers((list) => {
+      const filtered: PopoverItem[] = [];
+      for (const item of list) {
+        if (item.kind === next.kind && item.tool === next.tool) {
+          const t = exitTimersRef.current.get(item.id);
+          if (t !== undefined) {
+            window.clearTimeout(t);
+            exitTimersRef.current.delete(item.id);
+          }
+        } else {
+          filtered.push(item);
+        }
+      }
+      return filtered;
+    });
+    setActivePopover({ ...next, id: ++popoverSeqRef.current });
+  };
 
   // Auto-close popover when tapping outside or starting to draw on the PDF
   useEffect(() => {
@@ -522,7 +609,7 @@ export const FloatingToolPalette = forwardRef<
       ) {
         return;
       }
-      setActivePopover(null);
+      closePopoverAnimated();
     };
     window.addEventListener('pointerdown', handleOutside, true);
     window.addEventListener('touchstart', handleOutside, true);
@@ -533,7 +620,7 @@ export const FloatingToolPalette = forwardRef<
   }, [activePopover]);
 
   useEffect(() => {
-    setActivePopover(null);
+    clearPopoversImmediate();
   }, [boundsSize, paletteState]);
 
   useEffect(() => {
@@ -599,7 +686,7 @@ export const FloatingToolPalette = forwardRef<
 
   // Close popovers when sidebar toggles; position updates are driven synchronously by StudyPage's rAF
   useEffect(() => {
-    setActivePopover(null);
+    clearPopoversImmediate();
   }, [sidebarOpen]);
 
   useImperativeHandle(
@@ -921,7 +1008,7 @@ export const FloatingToolPalette = forwardRef<
 
     const startedOnButton = Boolean((e.target as HTMLElement | null)?.closest('button'));
     if (!startedOnButton) {
-      setActivePopover(null);
+      closePopoverAnimated();
     }
 
     const wasMorphing = activeAnimsRef.current.length > 0;
@@ -977,7 +1064,7 @@ export const FloatingToolPalette = forwardRef<
       const moved = current.moved || justStartedMoving;
 
       if (justStartedMoving) {
-        setActivePopover(null);
+        clearPopoversImmediate();
         suppressClickRef.current = true;
         try {
           paletteElRef.current?.setPointerCapture(e.pointerId);
@@ -1114,7 +1201,7 @@ export const FloatingToolPalette = forwardRef<
   };
 
   const handleCollapseButton = () => {
-    setActivePopover(null);
+    clearPopoversImmediate();
     const r = paletteElRef.current?.getBoundingClientRect();
     if (r && r.width > 0) {
       flipOriginRef.current = {
@@ -1215,30 +1302,30 @@ export const FloatingToolPalette = forwardRef<
     // 1st tap: switch tool normally without opening popover
     if (tool !== nextTool) {
       setTool(nextTool);
-      setActivePopover(null);
+      closePopoverAnimated();
       return;
     }
 
     // 2nd tap on already-selected tool: toggle Freeform-style size popover
     if (activePopover?.kind === 'size' && activePopover.tool === nextTool) {
-      setActivePopover(null);
+      closePopoverAnimated();
       return;
     }
 
     const anchor = computePopoverAnchor(btnEl, 88);
     if (!anchor) return;
-    setActivePopover({ kind: 'size', tool: nextTool, ...anchor });
+    openPopoverAnimated({ kind: 'size', tool: nextTool, ...anchor });
   };
 
   const handleColorButtonClick = () => {
     if (tool === 'eraser') return;
     if (activePopover?.kind === 'color') {
-      setActivePopover(null);
+      closePopoverAnimated();
       return;
     }
     const anchor = computePopoverAnchor(colorBtnRef.current, 108);
     if (!anchor) return;
-    setActivePopover({ kind: 'color', tool, ...anchor });
+    openPopoverAnimated({ kind: 'color', tool, ...anchor });
   };
 
   // Compute snap preview ghost coordinates in pixels (same transform system, zero conflict)
@@ -1383,7 +1470,7 @@ export const FloatingToolPalette = forwardRef<
               type="button"
               onClick={() => {
                 setInteractionMode('flip');
-                setActivePopover(null);
+                closePopoverAnimated();
               }}
               title="めくり（Apple Pencilは常に書き込み可）"
               className={`relative z-10 rounded-full flex items-center justify-center transition-colors duration-200 ${
@@ -1401,7 +1488,7 @@ export const FloatingToolPalette = forwardRef<
               type="button"
               onClick={() => {
                 setInteractionMode('draw');
-                setActivePopover(null);
+                closePopoverAnimated();
               }}
               title="書く（指/マウスでも直接書き込み）"
               className={`relative z-10 rounded-full flex items-center justify-center transition-colors duration-200 ${
@@ -1578,110 +1665,154 @@ export const FloatingToolPalette = forwardRef<
         </div>
       )}
 
-      {/* Freeform-style Speech Bubble Popover for Stroke Width / Color */}
-      {activePopover && !paletteState.collapsed && (
-        <div
-          key={`${activePopover.kind}-${activePopover.tool}`}
-          ref={popoverRef}
-          onPointerDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          style={{
-            left: `${activePopover.anchorX.toFixed(1)}px`,
-            top: `${activePopover.anchorY.toFixed(1)}px`,
-            transform:
-              activePopover.dock === 'bottom'
-                ? 'translate(-50%, -100%)'
-                : activePopover.dock === 'top'
-                  ? 'translate(-50%, 0)'
-                  : activePopover.dock === 'left'
-                    ? 'translate(0, -50%)'
-                    : 'translate(-100%, -50%)',
-          }}
-          className="absolute z-40 select-none"
-        >
-          <div className="relative animate-palette-popover rounded-full bg-base-100/95 backdrop-blur-md border border-base-300 shadow-xl px-2.5 py-2 flex items-center gap-1.5">
-            {/* Speech bubble triangle pointer pointing toward the active anchor button */}
-            <span
-              aria-hidden="true"
-              className={`absolute w-3 h-3 rotate-45 bg-base-100/95 pointer-events-none ${
-                activePopover.dock === 'bottom'
-                  ? '-bottom-[7px] left-1/2 -translate-x-1/2 border-r border-b border-base-300'
-                  : activePopover.dock === 'top'
-                    ? '-top-[7px] left-1/2 -translate-x-1/2 border-l border-t border-base-300'
-                    : activePopover.dock === 'left'
-                      ? '-left-[7px] top-1/2 -translate-y-1/2 border-l border-b border-base-300'
-                      : '-right-[7px] top-1/2 -translate-y-1/2 border-r border-t border-base-300'
-              }`}
-            />
+      {/* Freeform-style Speech Bubble Popover for Stroke Width / Color (supports simultaneous exit + enter) */}
+      {!paletteState.collapsed && (() => {
+        const renderPopover = (pop: PopoverItem, isExiting: boolean) => {
+          const motionOrigin =
+            pop.dock === 'bottom'
+              ? { origin: '50% 100%', popX: '0px', popY: '10px' }
+              : pop.dock === 'top'
+                ? { origin: '50% 0%', popX: '0px', popY: '-10px' }
+                : pop.dock === 'left'
+                  ? { origin: '0% 50%', popX: '-10px', popY: '0px' }
+                  : { origin: '100% 50%', popX: '10px', popY: '0px' };
 
-            {activePopover.kind === 'size' ? (
-              <div className="relative isolate flex items-center gap-1.5">
+          const bubbleStyle = {
+            transformOrigin: motionOrigin.origin,
+            '--pop-x': motionOrigin.popX,
+            '--pop-y': motionOrigin.popY,
+          } as CSSProperties;
+
+          const currentSizeIdx = isExiting
+            ? (pop.frozenSizeIdx ?? 1)
+            : pop.tool === 'marker'
+              ? markerSizeIndex
+              : pop.tool === 'eraser'
+                ? eraserSizeIndex
+                : penSizeIndex;
+
+          const currentColor = isExiting
+            ? (pop.frozenColor ?? (pop.tool === 'marker' ? markerColor : penColor))
+            : pop.tool === 'marker'
+              ? markerColor
+              : penColor;
+
+          return (
+            <div
+              key={pop.id}
+              ref={isExiting ? undefined : popoverRef}
+              aria-hidden={isExiting || undefined}
+              onPointerDown={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+              style={{
+                left: `${pop.anchorX.toFixed(1)}px`,
+                top: `${pop.anchorY.toFixed(1)}px`,
+                transform:
+                  pop.dock === 'bottom'
+                    ? 'translate(-50%, -100%)'
+                    : pop.dock === 'top'
+                      ? 'translate(-50%, 0)'
+                      : pop.dock === 'left'
+                        ? 'translate(0, -50%)'
+                        : 'translate(-100%, -50%)',
+              }}
+              className={
+                isExiting
+                  ? 'absolute z-[39] select-none pointer-events-none'
+                  : 'absolute z-40 select-none'
+              }
+            >
+              <div
+                style={bubbleStyle}
+                className={`relative ${
+                  isExiting ? 'animate-palette-popover-out' : 'animate-palette-popover-in'
+                } rounded-full bg-base-100/95 backdrop-blur-md border border-base-300 shadow-xl px-2.5 py-2 flex items-center gap-1.5`}
+              >
+                {/* Speech bubble triangle pointer pointing toward the active anchor button */}
                 <span
-                  ref={sizePillRef}
                   aria-hidden="true"
-                  className="absolute top-0 left-0 z-0 w-11 h-11 rounded-full bg-primary/12 ring-2 ring-primary pointer-events-none"
+                  className={`absolute w-3 h-3 rotate-45 bg-base-100/95 pointer-events-none ${
+                    pop.dock === 'bottom'
+                      ? '-bottom-[7px] left-1/2 -translate-x-1/2 border-r border-b border-base-300'
+                      : pop.dock === 'top'
+                        ? '-top-[7px] left-1/2 -translate-x-1/2 border-l border-t border-base-300'
+                        : pop.dock === 'left'
+                          ? '-left-[7px] top-1/2 -translate-y-1/2 border-l border-b border-base-300'
+                          : '-right-[7px] top-1/2 -translate-y-1/2 border-r border-t border-base-300'
+                  }`}
                 />
-                {SIZE_OPTIONS.map((opt, idx) => {
-                  const isEraserPopover = activePopover.tool === 'eraser';
-                  const dotPx = idx === 0 ? 7 : idx === 1 ? 13 : 19;
-                  const ringPx = idx === 0 ? 11 : idx === 1 ? 17 : 24;
-                  const currentSizeIdx =
-                    activePopover.tool === 'marker'
-                      ? markerSizeIndex
-                      : isEraserPopover
-                        ? eraserSizeIndex
-                        : penSizeIndex;
-                  const active = currentSizeIdx === idx;
-                  return (
-                    <button
-                      key={opt.label}
-                      ref={(el) => {
-                        sizeBtnRefs.current[idx] = el;
-                      }}
-                      type="button"
-                      title={
-                        isEraserPopover
-                          ? `大きさ：${opt.eraserLabel}（${opt.eraser}px）`
-                          : `太さ：${opt.label}`
-                      }
-                      onClick={() => {
-                        if (activePopover.tool === 'marker') {
-                          setMarkerSizeIndex(idx as 0 | 1 | 2);
-                        } else if (isEraserPopover) {
-                          setEraserSizeIndex(idx as 0 | 1 | 2);
-                        } else {
-                          setPenSizeIndex(idx as 0 | 1 | 2);
-                        }
-                      }}
-                      className={`relative z-10 w-11 h-11 rounded-full flex items-center justify-center transition-colors duration-200 ${
-                        active ? '' : 'hover:bg-base-200/70'
-                      }`}
-                    >
-                      {isEraserPopover ? (
-                        <span
-                          className={`rounded-full block border-2 transition-colors duration-200 ${
-                            active
-                              ? 'border-primary bg-primary/15'
-                              : 'border-base-content/75 bg-base-content/5'
+
+                {pop.kind === 'size' ? (
+                  <div className="relative isolate flex items-center gap-1.5">
+                    {!isExiting && (
+                      <span
+                        ref={sizePillRef}
+                        aria-hidden="true"
+                        className="absolute top-0 left-0 z-0 w-11 h-11 rounded-full bg-primary/12 ring-2 ring-primary pointer-events-none"
+                      />
+                    )}
+                    {SIZE_OPTIONS.map((opt, idx) => {
+                      const isEraserPopover = pop.tool === 'eraser';
+                      const dotPx = idx === 0 ? 7 : idx === 1 ? 13 : 19;
+                      const ringPx = idx === 0 ? 11 : idx === 1 ? 17 : 24;
+                      const active = currentSizeIdx === idx;
+                      return (
+                        <button
+                          key={opt.label}
+                          ref={
+                            isExiting
+                              ? undefined
+                              : (el) => {
+                                  sizeBtnRefs.current[idx] = el;
+                                }
+                          }
+                          type="button"
+                          title={
+                            isEraserPopover
+                              ? `大きさ：${opt.eraserLabel}（${opt.eraser}px）`
+                              : `太さ：${opt.label}`
+                          }
+                          onClick={() => {
+                            if (isExiting) return;
+                            if (pop.tool === 'marker') {
+                              setMarkerSizeIndex(idx as 0 | 1 | 2);
+                            } else if (isEraserPopover) {
+                              setEraserSizeIndex(idx as 0 | 1 | 2);
+                            } else {
+                              setPenSizeIndex(idx as 0 | 1 | 2);
+                            }
+                          }}
+                          className={`relative z-10 w-11 h-11 rounded-full flex items-center justify-center transition-colors duration-200 ${
+                            isExiting && active
+                              ? 'bg-primary/12 ring-2 ring-primary'
+                              : active
+                                ? ''
+                                : 'hover:bg-base-200/70'
                           }`}
-                          style={{ width: ringPx, height: ringPx }}
-                        />
-                      ) : (
-                        <span
-                          className={`rounded-full block transition-colors duration-200 ${
-                            active ? 'bg-primary' : 'bg-base-content/80'
-                          }`}
-                          style={{ width: dotPx, height: dotPx }}
-                        />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (activePopover.tool === 'marker' ? MARKER_COLOR_OPTIONS : PEN_COLOR_OPTIONS).map(
+                        >
+                          {isEraserPopover ? (
+                            <span
+                              className={`rounded-full block border-2 transition-colors duration-200 ${
+                                active
+                                  ? 'border-primary bg-primary/15'
+                                  : 'border-base-content/75 bg-base-content/5'
+                              }`}
+                              style={{ width: ringPx, height: ringPx }}
+                            />
+                          ) : (
+                            <span
+                              className={`rounded-full block transition-colors duration-200 ${
+                                active ? 'bg-primary' : 'bg-base-content/80'
+                              }`}
+                              style={{ width: dotPx, height: dotPx }}
+                            />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (pop.tool === 'marker' ? MARKER_COLOR_OPTIONS : PEN_COLOR_OPTIONS).map(
                   (c) => {
-                    const currentColor =
-                      activePopover.tool === 'marker' ? markerColor : penColor;
                     const selected = currentColor === c.value;
                     return (
                       <button
@@ -1689,7 +1820,8 @@ export const FloatingToolPalette = forwardRef<
                         type="button"
                         title={c.label}
                         onClick={() => {
-                          if (activePopover.tool === 'marker') {
+                          if (isExiting) return;
+                          if (pop.tool === 'marker') {
                             setMarkerColor(c.value);
                           } else {
                             setPenColor(c.value);
@@ -1709,9 +1841,18 @@ export const FloatingToolPalette = forwardRef<
                     );
                   },
                 )}
-          </div>
-        </div>
-      )}
+              </div>
+            </div>
+          );
+        };
+
+        return (
+          <>
+            {exitingPopovers.map((pop) => renderPopover(pop, true))}
+            {activePopover && renderPopover(activePopover, false)}
+          </>
+        );
+      })()}
     </>
   );
 });

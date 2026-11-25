@@ -132,18 +132,39 @@
 }
 
 @keyframes palette-popover-in {
-  from {
+  0% {
     opacity: 0;
-    scale: 0.9;
+    transform: translate3d(var(--pop-x, 0px), var(--pop-y, 10px), 0) scale(0.72);
   }
-  to {
+  65% {
     opacity: 1;
-    scale: 1;
+    transform: translate3d(0px, 0px, 0) scale(1.035);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0px, 0px, 0) scale(1);
   }
 }
 
-.animate-palette-popover {
-  animation: palette-popover-in 180ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+@keyframes palette-popover-out {
+  0% {
+    opacity: 1;
+    transform: translate3d(0px, 0px, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--pop-x, 0px), var(--pop-y, 10px), 0) scale(0.76);
+  }
+}
+
+.animate-palette-popover-in {
+  animation: palette-popover-in 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+.animate-palette-popover-out {
+  animation: palette-popover-out 170ms cubic-bezier(0.4, 0, 1, 1) both;
+  will-change: transform, opacity;
 }
 
 @keyframes dot-pop {
@@ -219,5 +240,9 @@
   .record-accordion,
   .record-accordion[data-open="true"] {
     transition: none;
+  }
+  .animate-palette-popover-in,
+  .animate-palette-popover-out {
+    animation-duration: 1ms;
   }
 }
