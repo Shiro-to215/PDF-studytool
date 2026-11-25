@@ -16,7 +16,7 @@ import {
   type UnitNode,
   type Workbook,
 } from '../types/models';
-import { ensurePdfWorker, pdfjsLib } from '../utils/pdfWorker';
+import { getPdfDocumentOptions, pdfjsLib } from '../utils/pdfWorker';
 
 export class PaperWorkDB extends Dexie {
   workbooks!: Table<Workbook, string>;
@@ -114,7 +114,6 @@ export async function extractPdfMetaAndCover(
   pageCount: number;
   coverDataUrl?: string;
 }> {
-  ensurePdfWorker();
   let data: Uint8Array;
   if (source instanceof Uint8Array) {
     data = new Uint8Array(source);
@@ -124,7 +123,7 @@ export async function extractPdfMetaAndCover(
     const buf = await source.arrayBuffer();
     data = new Uint8Array(buf.slice(0));
   }
-  const loadingTask = pdfjsLib.getDocument({ data });
+  const loadingTask = pdfjsLib.getDocument(getPdfDocumentOptions(data));
   const pdfDoc = await loadingTask.promise;
 
   try {
@@ -226,10 +225,13 @@ export async function relinkWorkbookPdf(workbookId: string, pdfBlob: Blob): Prom
   const { pageCount, coverDataUrl } = await extractPdfMetaAndCover(rawBuffer);
   const now = Date.now();
   await db.transaction('rw', [db.workbooks, db.pdfFiles], async () => {
+    const wb = await db.workbooks.get(workbookId);
+    const clampedLastPage = Math.max(1, Math.min(pageCount || 1, wb?.lastPage ?? 1));
     await db.pdfFiles.put({ workbookId, data: rawBuffer });
     await db.workbooks.update(workbookId, {
       pdfBlob: undefined,
       pageCount,
+      lastPage: clampedLastPage,
       coverDataUrl,
       updatedAt: now,
     });
@@ -356,62 +358,64 @@ export async function upsertPageState(
   >,
   layerName?: string,
 ): Promise<PageState> {
-  const id = getPageStateId(workbookId, pageNumber);
-  const [existing, wb] = await Promise.all([
-    db.pageStates.get(id),
-    db.workbooks.get(workbookId),
-  ]);
-  const now = Date.now();
-  const firstLayer = wb?.layers[0] ?? '1周目';
-  const targetLayer = layerName ?? (wb ? resolveActiveLayer(wb) : firstLayer);
+  return db.transaction('rw', [db.pageStates, db.workbooks], async () => {
+    const id = getPageStateId(workbookId, pageNumber);
+    const [existing, wb] = await Promise.all([
+      db.pageStates.get(id),
+      db.workbooks.get(workbookId),
+    ]);
+    const now = Date.now();
+    const firstLayer = wb?.layers[0] ?? '1周目';
+    const targetLayer = layerName ?? (wb ? resolveActiveLayer(wb) : firstLayer);
 
-  const curRec = existing
-    ? resolveRoundRecord(existing, targetLayer, firstLayer)
-    : { status: 'none' as StudyStatus, missReasons: [] as string[] };
-  const nextStatus = patch.status ?? curRec.status;
-  const nextReasons = patch.missReasons ?? curRec.missReasons;
+    const curRec = existing
+      ? resolveRoundRecord(existing, targetLayer, firstLayer)
+      : { status: 'none' as StudyStatus, missReasons: [] as string[] };
+    const nextStatus = patch.status ?? curRec.status;
+    const nextReasons = patch.missReasons ?? curRec.missReasons;
 
-  const history: MissHistoryEntry[] = existing?.missHistory ? [...existing.missHistory] : [];
-  if (shouldAppendHistory(curRec.status, curRec.missReasons, nextStatus, nextReasons)) {
-    history.push({
-      timestamp: now,
-      status: nextStatus,
-      reasons: [...nextReasons],
-    });
-  }
-
-  const nextRoundRecords = buildBaseRoundRecords(existing, firstLayer);
-  if (patch.status !== undefined || patch.missReasons !== undefined || existing?.roundRecords) {
-    if (nextStatus === 'none' && nextReasons.length === 0) {
-      delete nextRoundRecords[targetLayer];
-    } else {
-      nextRoundRecords[targetLayer] = {
+    const history: MissHistoryEntry[] = existing?.missHistory ? [...existing.missHistory] : [];
+    if (shouldAppendHistory(curRec.status, curRec.missReasons, nextStatus, nextReasons)) {
+      history.push({
+        timestamp: now,
         status: nextStatus,
-        missReasons: [...nextReasons],
-      };
+        reasons: [...nextReasons],
+      });
     }
-  }
-  const compacted = compactRoundRecords(nextRoundRecords);
 
-  const nextState: PageState = {
-    id,
-    workbookId,
-    pageNumber,
-    status: nextStatus,
-    missReasons: nextReasons,
-    ...(compacted ? { roundRecords: compacted } : {}),
-    missHistory: history,
-    hints: patch.hints ?? existing?.hints ?? [],
-    compactAnswer: patch.compactAnswer ?? existing?.compactAnswer ?? '',
-    answerEntries:
-      'answerEntries' in patch ? patch.answerEntries : existing?.answerEntries,
-    memo: patch.memo ?? existing?.memo ?? '',
-    updatedAt: now,
-  };
+    const nextRoundRecords = buildBaseRoundRecords(existing, firstLayer);
+    if (patch.status !== undefined || patch.missReasons !== undefined || existing?.roundRecords) {
+      if (nextStatus === 'none' && nextReasons.length === 0) {
+        delete nextRoundRecords[targetLayer];
+      } else {
+        nextRoundRecords[targetLayer] = {
+          status: nextStatus,
+          missReasons: [...nextReasons],
+        };
+      }
+    }
+    const compacted = compactRoundRecords(nextRoundRecords);
 
-  await db.pageStates.put(nextState);
-  await db.workbooks.update(workbookId, { updatedAt: now });
-  return nextState;
+    const nextState: PageState = {
+      id,
+      workbookId,
+      pageNumber,
+      status: nextStatus,
+      missReasons: nextReasons,
+      ...(compacted ? { roundRecords: compacted } : {}),
+      missHistory: history,
+      hints: patch.hints ?? existing?.hints ?? [],
+      compactAnswer: patch.compactAnswer ?? existing?.compactAnswer ?? '',
+      answerEntries:
+        'answerEntries' in patch ? patch.answerEntries : existing?.answerEntries,
+      memo: patch.memo ?? existing?.memo ?? '',
+      updatedAt: now,
+    };
+
+    await db.pageStates.put(nextState);
+    await db.workbooks.update(workbookId, { updatedAt: now });
+    return nextState;
+  });
 }
 
 export async function upsertProblem(
@@ -431,54 +435,56 @@ export async function upsertProblem(
   >,
   layerName?: string,
 ): Promise<Problem | undefined> {
-  const existing = await db.problems.get(problemId);
-  if (!existing) return undefined;
+  return db.transaction('rw', [db.problems, db.workbooks], async () => {
+    const existing = await db.problems.get(problemId);
+    if (!existing) return undefined;
 
-  const wb = await db.workbooks.get(existing.workbookId);
-  const now = Date.now();
-  const firstLayer = wb?.layers[0] ?? '1周目';
-  const targetLayer = layerName ?? (wb ? resolveActiveLayer(wb) : firstLayer);
+    const wb = await db.workbooks.get(existing.workbookId);
+    const now = Date.now();
+    const firstLayer = wb?.layers[0] ?? '1周目';
+    const targetLayer = layerName ?? (wb ? resolveActiveLayer(wb) : firstLayer);
 
-  const curRec = resolveRoundRecord(existing, targetLayer, firstLayer);
-  const nextStatus = patch.status ?? curRec.status;
-  const nextReasons = patch.missReasons ?? curRec.missReasons;
+    const curRec = resolveRoundRecord(existing, targetLayer, firstLayer);
+    const nextStatus = patch.status ?? curRec.status;
+    const nextReasons = patch.missReasons ?? curRec.missReasons;
 
-  const history: MissHistoryEntry[] = [...existing.missHistory];
-  if (shouldAppendHistory(curRec.status, curRec.missReasons, nextStatus, nextReasons)) {
-    history.push({
-      timestamp: now,
-      status: nextStatus,
-      reasons: [...nextReasons],
-    });
-  }
-
-  const nextRoundRecords = buildBaseRoundRecords(existing, firstLayer);
-  if (patch.status !== undefined || patch.missReasons !== undefined || existing.roundRecords) {
-    if (nextStatus === 'none' && nextReasons.length === 0) {
-      delete nextRoundRecords[targetLayer];
-    } else {
-      nextRoundRecords[targetLayer] = {
+    const history: MissHistoryEntry[] = [...existing.missHistory];
+    if (shouldAppendHistory(curRec.status, curRec.missReasons, nextStatus, nextReasons)) {
+      history.push({
+        timestamp: now,
         status: nextStatus,
-        missReasons: [...nextReasons],
-      };
+        reasons: [...nextReasons],
+      });
     }
-  }
-  const compacted = compactRoundRecords(nextRoundRecords);
 
-  const { roundRecords: _prevRoundRecords, ...existingWithoutRounds } = existing;
-  const nextProblem: Problem = {
-    ...existingWithoutRounds,
-    ...patch,
-    status: nextStatus,
-    missReasons: nextReasons,
-    ...(compacted ? { roundRecords: compacted } : {}),
-    missHistory: history,
-    updatedAt: now,
-  };
+    const nextRoundRecords = buildBaseRoundRecords(existing, firstLayer);
+    if (patch.status !== undefined || patch.missReasons !== undefined || existing.roundRecords) {
+      if (nextStatus === 'none' && nextReasons.length === 0) {
+        delete nextRoundRecords[targetLayer];
+      } else {
+        nextRoundRecords[targetLayer] = {
+          status: nextStatus,
+          missReasons: [...nextReasons],
+        };
+      }
+    }
+    const compacted = compactRoundRecords(nextRoundRecords);
 
-  await db.problems.put(nextProblem);
-  await db.workbooks.update(existing.workbookId, { updatedAt: now });
-  return nextProblem;
+    const { roundRecords: _prevRoundRecords, ...existingWithoutRounds } = existing;
+    const nextProblem: Problem = {
+      ...existingWithoutRounds,
+      ...patch,
+      status: nextStatus,
+      missReasons: nextReasons,
+      ...(compacted ? { roundRecords: compacted } : {}),
+      missHistory: history,
+      updatedAt: now,
+    };
+
+    await db.problems.put(nextProblem);
+    await db.workbooks.update(existing.workbookId, { updatedAt: now });
+    return nextProblem;
+  });
 }
 
 export async function savePageStrokes(
@@ -714,23 +720,66 @@ export async function updateWorkbookRounds(
         await db.pageStates.bulkPut(updatedStates);
       }
 
-      // Sync stroke layers (rename or delete orphaned stroke layers)
+      // Sync stroke layers (rename, merge, or delete orphaned stroke layers)
       const strokes = await db.pageStrokes.where('workbookId').equals(workbookId).toArray();
       const deleteIds: string[] = [];
-      const putStrokes: PageStrokes[] = [];
+      const mergedBuckets = new Map<
+        string,
+        {
+          pageNumber: number;
+          layerName: string;
+          strokes: Stroke[];
+          seenStrokeIds: Set<string>;
+          needsWrite: boolean;
+          sourceCount: number;
+        }
+      >();
       for (const st of strokes) {
         const mapped = renameMap[st.layerName] ?? st.layerName;
         if (!validSet.has(mapped)) {
           deleteIds.push(st.id);
-        } else if (mapped !== st.layerName) {
-          deleteIds.push(st.id);
-          putStrokes.push({
-            ...st,
-            id: getPageStrokesId(workbookId, st.pageNumber, mapped),
-            layerName: mapped,
-            updatedAt: now,
-          });
+          continue;
         }
+        if (mapped !== st.layerName) {
+          deleteIds.push(st.id);
+        }
+        const bucketKey = `${st.pageNumber}:${mapped}`;
+        let bucket = mergedBuckets.get(bucketKey);
+        if (!bucket) {
+          bucket = {
+            pageNumber: st.pageNumber,
+            layerName: mapped,
+            strokes: [],
+            seenStrokeIds: new Set<string>(),
+            needsWrite: mapped !== st.layerName,
+            sourceCount: 0,
+          };
+          mergedBuckets.set(bucketKey, bucket);
+        } else {
+          bucket.needsWrite = true;
+        }
+        bucket.sourceCount += 1;
+        if (mapped !== st.layerName) {
+          bucket.needsWrite = true;
+        }
+        for (const stroke of st.strokes) {
+          if (!bucket.seenStrokeIds.has(stroke.id)) {
+            bucket.seenStrokeIds.add(stroke.id);
+            bucket.strokes.push(stroke);
+          }
+        }
+      }
+      const putStrokes: PageStrokes[] = [];
+      for (const bucket of mergedBuckets.values()) {
+        if (!bucket.needsWrite && bucket.sourceCount <= 1) continue;
+        putStrokes.push({
+          id: getPageStrokesId(workbookId, bucket.pageNumber, bucket.layerName),
+          workbookId,
+          pageNumber: bucket.pageNumber,
+          layerName: bucket.layerName,
+          strokes: bucket.strokes,
+          updatedAt: now,
+        });
       }
       if (deleteIds.length > 0) {
         await db.pageStrokes.bulkDelete(deleteIds);

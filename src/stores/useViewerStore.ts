@@ -121,6 +121,7 @@ interface ViewerStore {
   }) => void;
   closeWorkbook: () => void;
   setCurrentPage: (page: number, options?: { syncToc?: boolean }) => void;
+  setPageCount: (pageCount: number) => void;
   setSpreadMode: (mode: SpreadMode) => void;
   setBindingDirection: (dir: BindingDirection) => void;
   setCoverSinglePage: (coverSingle: boolean) => void;
@@ -218,6 +219,17 @@ export const useViewerStore = create<ViewerStore>((set, get) => ({
       panY: 0,
     });
   },
+
+  setPageCount: (pageCount) =>
+    set((s) => {
+      const safeTotal = Math.max(1, pageCount || 1);
+      const safeCurrent = Math.max(1, Math.min(safeTotal, s.currentPage));
+      if (s.pageCount === safeTotal && s.currentPage === safeCurrent) return s;
+      return {
+        pageCount: safeTotal,
+        currentPage: safeCurrent,
+      };
+    }),
 
   setSpreadMode: (spreadMode) =>
     set((s) =>

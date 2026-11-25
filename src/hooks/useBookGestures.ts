@@ -185,7 +185,22 @@ export function useBookGestures(callbacks: BookGestureCallbacks) {
         const f = fingers[0];
         const currentZoom = cb.getZoomPan();
 
-        if (currentZoom.scale > 1.02) {
+        if (cb.interactionMode === 'draw') {
+          const started = cb.onDrawStart(f.clientX, f.clientY, 0.5, 'touch');
+          if (started) {
+            touchModeRef.current = 'draw';
+            touchDrawIdRef.current = f.identifier;
+          } else if (currentZoom.scale > 1.02) {
+            touchModeRef.current = 'pan';
+            touchPanIdRef.current = f.identifier;
+            touchPanOriginRef.current = {
+              startX: f.clientX,
+              startY: f.clientY,
+              panX: currentZoom.panX,
+              panY: currentZoom.panY,
+            };
+          }
+        } else if (currentZoom.scale > 1.02) {
           touchModeRef.current = 'pan';
           touchPanIdRef.current = f.identifier;
           touchPanOriginRef.current = {
@@ -194,12 +209,6 @@ export function useBookGestures(callbacks: BookGestureCallbacks) {
             panX: currentZoom.panX,
             panY: currentZoom.panY,
           };
-        } else if (cb.interactionMode === 'draw') {
-          const started = cb.onDrawStart(f.clientX, f.clientY, 0.5, 'touch');
-          if (started) {
-            touchModeRef.current = 'draw';
-            touchDrawIdRef.current = f.identifier;
-          }
         } else {
           touchModeRef.current = 'flip';
           touchFlipIdRef.current = f.identifier;

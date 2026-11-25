@@ -111,12 +111,46 @@ export function drawSingleStroke(
   ctx.restore();
 }
 
+export interface StrokeRegionSpec {
+  normX: number;
+  normY: number;
+  normW: number;
+  normH: number;
+}
+
+function strokeIntersectsRegion(stroke: Stroke, region: StrokeRegionSpec): boolean {
+  const pts = stroke.points;
+  if (pts.length === 0) return false;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of pts) {
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  const margin = 0.05;
+  return (
+    maxX >= region.normX - margin &&
+    minX <= region.normX + region.normW + margin &&
+    maxY >= region.normY - margin &&
+    minY <= region.normY + region.normH + margin
+  );
+}
+
 export function renderStrokesToCanvas(
   ctx: CanvasRenderingContext2D,
   strokes: Stroke[],
   width: number,
   height: number,
-  options?: { clear?: boolean; multiplyMarkers?: boolean },
+  options?: {
+    clear?: boolean;
+    multiplyMarkers?: boolean;
+    toolFilter?: 'pen' | 'marker';
+    region?: StrokeRegionSpec;
+  },
 ): void {
   const clear = options?.clear ?? true;
   if (clear) {
@@ -124,25 +158,42 @@ export function renderStrokesToCanvas(
   }
   if (strokes.length === 0) return;
 
+  const region = options?.region;
+  const fullW = region ? width / Math.max(0.0001, region.normW) : width;
+  const fullH = region ? height / Math.max(0.0001, region.normH) : height;
+
+  ctx.save();
+  if (region) {
+    ctx.translate(-region.normX * fullW, -region.normY * fullH);
+  }
+
+  const toolFilter = options?.toolFilter;
+
   // Draw markers first so ink pens sit crisply above markers
-  for (const s of strokes) {
-    if (s.tool === 'marker') {
+  if (!toolFilter || toolFilter === 'marker') {
+    for (const s of strokes) {
+      if (s.tool !== 'marker') continue;
+      if (region && !strokeIntersectsRegion(s, region)) continue;
       if (options?.multiplyMarkers) {
         ctx.save();
         ctx.globalCompositeOperation = 'multiply';
-        drawSingleStroke(ctx, s, width, height);
+        drawSingleStroke(ctx, s, fullW, fullH);
         ctx.restore();
       } else {
-        drawSingleStroke(ctx, s, width, height);
+        drawSingleStroke(ctx, s, fullW, fullH);
       }
     }
   }
 
-  for (const s of strokes) {
-    if (s.tool === 'pen') {
-      drawSingleStroke(ctx, s, width, height);
+  if (!toolFilter || toolFilter === 'pen') {
+    for (const s of strokes) {
+      if (s.tool !== 'pen') continue;
+      if (region && !strokeIntersectsRegion(s, region)) continue;
+      drawSingleStroke(ctx, s, fullW, fullH);
     }
   }
+
+  ctx.restore();
 }
 
 function distToSegmentSq(

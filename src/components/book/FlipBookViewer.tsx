@@ -11,7 +11,13 @@ import {
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { PageStrokes, Stroke, StrokePoint } from '../../types/models';
 import { createId, savePageStrokes } from '../../db/database';
-import { getIdealRenderWidth, PdfDocumentManager } from '../../utils/pdfEngine';
+import {
+  getCappedCanvasSize,
+  getIdealRenderWidth,
+  MAX_RENDER_WIDTH,
+  MAX_TILE_PIXELS,
+  PdfDocumentManager,
+} from '../../utils/pdfEngine';
 import { isCircleTouchingStroke } from '../../utils/strokeRenderer';
 import {
   recognizeHoldShape,
@@ -32,7 +38,7 @@ import {
   type PageStrokesSnapshot,
 } from '../../stores/useToolStore';
 import { useBookGestures, type DrawMoveSample } from '../../hooks/useBookGestures';
-import { PageSurface } from './PageSurface';
+import { PageSurface, type ZoomTileSpec } from './PageSurface';
 
 export interface FlipBookViewerHandle {
   flipNext: () => void;
@@ -140,6 +146,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
 
     const [stageSize, setStageSize] = useState({ width: 800, height: 600 });
     const [committedScale, setCommittedScale] = useState(1);
+    const [zoomTilesByPage, setZoomTilesByPage] = useState<Record<number, ZoomTileSpec>>({});
 
     const {
       currentPage,
@@ -162,6 +169,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       markerSizeIndex,
       eraserSizeIndex,
       activeLayer,
+      allInkHidden,
       pushHistory,
       popUndo,
       popRedo,
@@ -271,6 +279,15 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
     committedScaleRef.current = committedScale;
     const zoomAnimRef = useRef<number | null>(null);
     const wheelSettleTimerRef = useRef<number | null>(null);
+    const zoomTileTimerRef = useRef<number | null>(null);
+
+    const clearZoomTiles = useCallback(() => {
+      if (zoomTileTimerRef.current !== null) {
+        window.clearTimeout(zoomTileTimerRef.current);
+        zoomTileTimerRef.current = null;
+      }
+      setZoomTilesByPage((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+    }, []);
 
     const stopZoomAnimation = useCallback(() => {
       if (zoomAnimRef.current !== null) {
@@ -374,6 +391,88 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       [interactionMode],
     );
 
+    const layoutRef = useRef({ leftPage: null as number | null, rightPage: null as number | null });
+    const scheduleZoomTiles = useCallback(() => {
+      if (zoomTileTimerRef.current !== null) {
+        window.clearTimeout(zoomTileTimerRef.current);
+      }
+      zoomTileTimerRef.current = window.setTimeout(() => {
+        zoomTileTimerRef.current = null;
+        if (flipSessionRef.current || zoomAnimRef.current !== null) return;
+        const { scale } = liveZoomRef.current;
+        if (scale <= committedScaleRef.current * 1.12) {
+          setZoomTilesByPage((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+          return;
+        }
+        const stageEl = stageRef.current;
+        const bookEl = bookRef.current;
+        if (!stageEl || !bookEl) return;
+
+        const stageRect = stageEl.getBoundingClientRect();
+        const bookRect = bookEl.getBoundingClientRect();
+        if (stageRect.width <= 0 || stageRect.height <= 0 || bookRect.width <= 0 || bookRect.height <= 0) {
+          return;
+        }
+
+        const viewLeft = stageRect.left;
+        const viewRight = stageRect.right - rightInsetRef.current;
+        const viewTop = stageRect.top;
+        const viewBottom = stageRect.bottom;
+        const slots = spreadModeRef.current === 'double' ? 2 : 1;
+        const slotW = bookRect.width / slots;
+        const slotH = bookRect.height;
+        const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 3) : 1;
+        const marginPx = 16;
+
+        const pageSlots: Array<{ page: number | null; left: number; top: number; width: number; height: number }> =
+          slots === 2
+            ? [
+                { page: layoutRef.current.leftPage, left: bookRect.left, top: bookRect.top, width: slotW, height: slotH },
+                { page: layoutRef.current.rightPage, left: bookRect.left + slotW, top: bookRect.top, width: slotW, height: slotH },
+              ]
+            : [
+                { page: layoutRef.current.leftPage, left: bookRect.left, top: bookRect.top, width: slotW, height: slotH },
+              ];
+
+        const nextTiles: Record<number, ZoomTileSpec> = {};
+        for (const slot of pageSlots) {
+          if (slot.page === null || slot.width <= 0 || slot.height <= 0) continue;
+          const ix0 = Math.max(slot.left, viewLeft - marginPx);
+          const iy0 = Math.max(slot.top, viewTop - marginPx);
+          const ix1 = Math.min(slot.left + slot.width, viewRight + marginPx);
+          const iy1 = Math.min(slot.top + slot.height, viewBottom + marginPx);
+          const iw = ix1 - ix0;
+          const ih = iy1 - iy0;
+          if (iw <= 4 || ih <= 4) continue;
+
+          const normX = Math.max(0, Math.min(1, (ix0 - slot.left) / slot.width));
+          const normY = Math.max(0, Math.min(1, (iy0 - slot.top) / slot.height));
+          const normX2 = Math.max(0, Math.min(1, (ix1 - slot.left) / slot.width));
+          const normY2 = Math.max(0, Math.min(1, (iy1 - slot.top) / slot.height));
+          const normW = normX2 - normX;
+          const normH = normY2 - normY;
+          if (normW <= 0.005 || normH <= 0.005) continue;
+
+          const capped = getCappedCanvasSize(
+            iw * dpr,
+            ih * dpr,
+            MAX_RENDER_WIDTH,
+            MAX_TILE_PIXELS,
+          );
+          nextTiles[slot.page] = {
+            normX,
+            normY,
+            normW,
+            normH,
+            pixelW: capped.width,
+            pixelH: capped.height,
+          };
+        }
+
+        setZoomTilesByPage(nextTiles);
+      }, 120);
+    }, []);
+
     const animateZoomTo = useCallback(
       (targetS: number, targetX: number, targetY: number, duration = 260) => {
         stopZoomAnimation();
@@ -386,6 +485,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
           applyZoomDom(targetS, targetX, targetY);
           setZoomPan(targetS, targetX, targetY);
           setCommittedScale(quantizeCommittedScale(targetS));
+          scheduleZoomTiles();
           return;
         }
 
@@ -406,12 +506,13 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
             zoomAnimRef.current = null;
             setZoomPan(targetS, targetX, targetY);
             setCommittedScale(quantizeCommittedScale(targetS));
+            scheduleZoomTiles();
           }
         };
 
         zoomAnimRef.current = requestAnimationFrame(tick);
       },
-      [stopZoomAnimation, applyZoomDom, setZoomPan, quantizeCommittedScale],
+      [stopZoomAnimation, applyZoomDom, setZoomPan, quantizeCommittedScale, scheduleZoomTiles],
     );
 
     // When bookW changes due to sidebar settle (open/close) or viewport resize while zoomed,
@@ -444,6 +545,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       };
 
       stopZoomAnimation();
+      clearZoomTiles();
       applyZoomDom(cur.scale, nextX, nextY);
 
       const nextCommitted = quantizeCommittedScale(cur.scale);
@@ -485,20 +587,22 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       if (prev.page !== currentPage || prev.spread !== spreadMode) {
         prevPageSpreadRef.current = { page: currentPage, spread: spreadMode };
         stopZoomAnimation();
+        clearZoomTiles();
         committedScaleRef.current = 1;
         applyZoomDom(1, 0, 0);
         setCommittedScale(1);
       }
-    }, [currentPage, spreadMode, stopZoomAnimation, applyZoomDom]);
+    }, [currentPage, spreadMode, stopZoomAnimation, clearZoomTiles, applyZoomDom]);
 
     // Smoothly animate back to 100% when reset button is pressed
     const prevResetSeqRef = useRef(zoomResetSeq);
     useEffect(() => {
       if (zoomResetSeq !== prevResetSeqRef.current) {
         prevResetSeqRef.current = zoomResetSeq;
+        clearZoomTiles();
         animateZoomTo(1, 0, 0, 260);
       }
-    }, [zoomResetSeq, animateZoomTo]);
+    }, [zoomResetSeq, clearZoomTiles, animateZoomTo]);
 
     useEffect(() => {
       return () => {
@@ -506,12 +610,16 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         if (wheelSettleTimerRef.current !== null) {
           window.clearTimeout(wheelSettleTimerRef.current);
         }
+        if (zoomTileTimerRef.current !== null) {
+          window.clearTimeout(zoomTileTimerRef.current);
+        }
       };
     }, [stopZoomAnimation]);
 
     const handleZoomPanLive = useCallback(
       (nextS: number, nextX: number, nextY: number, focusX?: number, focusY?: number) => {
         stopZoomAnimation();
+        clearZoomTiles();
         const prev = liveZoomRef.current;
         const clamped = clampZoomPan(nextS, nextX, nextY, true);
         if (focusX !== undefined && focusY !== undefined) {
@@ -524,7 +632,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         }
         applyZoomDom(clamped.scale, clamped.panX, clamped.panY);
       },
-      [stopZoomAnimation, clampZoomPan, applyZoomDom],
+      [stopZoomAnimation, clearZoomTiles, clampZoomPan, applyZoomDom],
     );
 
     const handleZoomPanEnd = useCallback(() => {
@@ -564,6 +672,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
     const handleWheelZoomAt = useCallback(
       (factor: number, clientX: number, clientY: number) => {
         stopZoomAnimation();
+        clearZoomTiles();
         const stageEl = stageRef.current;
         if (!stageEl) return;
         const rect = stageEl.getBoundingClientRect();
@@ -581,18 +690,19 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         applyZoomDom(clamped.scale, clamped.panX, clamped.panY);
         scheduleWheelSettle();
       },
-      [stopZoomAnimation, clampZoomPan, applyZoomDom, scheduleWheelSettle],
+      [stopZoomAnimation, clearZoomTiles, clampZoomPan, applyZoomDom, scheduleWheelSettle],
     );
 
     const handleWheelPan = useCallback(
       (dx: number, dy: number) => {
         stopZoomAnimation();
+        clearZoomTiles();
         const cur = liveZoomRef.current;
         const clamped = clampZoomPan(cur.scale, cur.panX + dx, cur.panY + dy, false);
         applyZoomDom(clamped.scale, clamped.panX, clamped.panY);
         scheduleWheelSettle();
       },
-      [stopZoomAnimation, clampZoomPan, applyZoomDom, scheduleWheelSettle],
+      [stopZoomAnimation, clearZoomTiles, clampZoomPan, applyZoomDom, scheduleWheelSettle],
     );
 
     // Current spread layout
@@ -600,6 +710,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       () => getSpreadLayout(currentPage, pageCount, spreadMode, bindingDirection, coverSinglePage),
       [currentPage, pageCount, spreadMode, bindingDirection, coverSinglePage],
     );
+    layoutRef.current = layout;
 
     const nextTargetPage = useMemo(
       () => getNextSpreadPage(currentPage, pageCount, spreadMode, coverSinglePage),
@@ -656,9 +767,15 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         }
       }
 
+      const fullBookDims = computeBookDims(
+        stageSize.width,
+        stageSize.height,
+        aspectRatio,
+        spreadMode,
+      );
       pdfManager.prefetchPages(
         nearPages,
-        getIdealRenderWidth(pageW, 1, aspectRatio),
+        getIdealRenderWidth(fullBookDims.pageW, 1, aspectRatio),
         nearPages.length,
         farPreviewPages,
       );
@@ -671,7 +788,8 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       spreadMode,
       bindingDirection,
       coverSinglePage,
-      pageW,
+      stageSize.width,
+      stageSize.height,
       aspectRatio,
     ]);
 
@@ -679,19 +797,73 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
     // and rapid consecutive strokes never overwrite each other before IndexedDB finishes.
     const [optimisticStrokes, setOptimisticStrokes] = useState<Record<string, Stroke[]>>({});
     const optimisticRef = useRef<Record<string, Stroke[]>>({});
+    const optimisticMetaRef = useRef<Record<string, { seq: number; saved: boolean }>>({});
+    const layersKey = layers.join('\0');
 
     useEffect(() => {
       optimisticRef.current = {};
+      optimisticMetaRef.current = {};
       setOptimisticStrokes({});
     }, [workbookId]);
+
+    // Clear stale optimistic entries once IndexedDB catches up or when rounds are edited/deleted
+    useEffect(() => {
+      const validLayers = new Set(layers);
+      const dbMap = new Map<string, Stroke[]>();
+      for (const rec of allPageStrokes) {
+        dbMap.set(`${rec.pageNumber}:${rec.layerName}`, rec.strokes);
+      }
+
+      let changed = false;
+      const nextMap: Record<string, Stroke[]> = { ...optimisticRef.current };
+
+      for (const [key, optList] of Object.entries(nextMap)) {
+        const colonIdx = key.indexOf(':');
+        const layer = colonIdx >= 0 ? key.slice(colonIdx + 1) : '';
+        const meta = optimisticMetaRef.current[key];
+
+        if (!validLayers.has(layer)) {
+          delete nextMap[key];
+          delete optimisticMetaRef.current[key];
+          changed = true;
+          continue;
+        }
+
+        if (meta && meta.saved) {
+          const dbList = dbMap.get(key);
+          const matchesDb =
+            dbList !== undefined
+              ? dbList.length === optList.length &&
+                dbList.every((s, idx) => s.id === optList[idx]?.id)
+              : optList.length === 0;
+          if (matchesDb) {
+            delete nextMap[key];
+            delete optimisticMetaRef.current[key];
+            changed = true;
+          }
+        }
+      }
+
+      if (changed) {
+        optimisticRef.current = nextMap;
+        setOptimisticStrokes(nextMap);
+      }
+    }, [allPageStrokes, layersKey, layers]);
 
     const commitLayerStrokes = useCallback(
       (pageNum: number, layerName: string, nextStrokes: Stroke[]) => {
         const layerKey = `${pageNum}:${layerName}`;
+        const nextSeq = (optimisticMetaRef.current[layerKey]?.seq ?? 0) + 1;
+        optimisticMetaRef.current[layerKey] = { seq: nextSeq, saved: false };
         const nextMap = { ...optimisticRef.current, [layerKey]: nextStrokes };
         optimisticRef.current = nextMap;
         setOptimisticStrokes(nextMap);
-        void savePageStrokes(workbookId, pageNum, layerName, nextStrokes);
+        void savePageStrokes(workbookId, pageNum, layerName, nextStrokes).finally(() => {
+          const curMeta = optimisticMetaRef.current[layerKey];
+          if (curMeta && curMeta.seq === nextSeq) {
+            curMeta.saved = true;
+          }
+        });
       },
       [workbookId],
     );
@@ -934,6 +1106,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         if (flipSessionRef.current) return;
         const session = createFlipSession(dir);
         if (!session) return;
+        clearZoomTiles();
         progressRef.current = 0;
         flipSessionRef.current = session;
         flipDirLockedRef.current = dir;
@@ -942,7 +1115,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
           settleFlip(true);
         });
       },
-      [createFlipSession, settleFlip],
+      [createFlipSession, clearZoomTiles, settleFlip],
     );
 
     useEffect(() => {
@@ -961,6 +1134,8 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       rawBookPoints: StrokePoint[];
       holdAnchorClient: { x: number; y: number };
       snappedShape: SnappedShape | null;
+      snapBasisW: number;
+      snapBasisH: number;
     } | null>(null);
     const holdTimerRef = useRef<number | null>(null);
     const eraserWorkingRef = useRef<{
@@ -1102,11 +1277,16 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         const session = draftSessionRef.current;
         if (!session || session.snappedShape) return;
 
-        const shape = recognizeHoldShape(session.rawBookPoints, bookW, bookH);
+        const z = Math.max(1, liveZoomRef.current.scale);
+        const basisW = bookW * z;
+        const basisH = bookH * z;
+        const shape = recognizeHoldShape(session.rawBookPoints, basisW, basisH);
         if (!shape) return;
 
         session.snappedShape = shape;
-        const snappedBookPoints = sampleShapeToBookPoints(shape, bookW, bookH);
+        session.snapBasisW = basisW;
+        session.snapBasisH = basisH;
+        const snappedBookPoints = sampleShapeToBookPoints(shape, basisW, basisH);
         setDraftStrokesByPage(buildDraftByPage(snappedBookPoints, session, shape.kind));
       }, HOLD_SNAP_MS);
     }, [clearHoldTimer, bookW, bookH, buildDraftByPage]);
@@ -1242,7 +1422,11 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         if (directHitsByPage.size === 0 && hitGroupIds.size === 0) return;
 
         const pagesToUpdate = new Set<number>(directHitsByPage.keys());
-        if (spreadMode === 'double' && hitGroupIds.size > 0) {
+        if (hitGroupIds.size > 0) {
+          for (const hitPage of directHitsByPage.keys()) {
+            if (hitPage - 1 >= 1) pagesToUpdate.add(hitPage - 1);
+            if (hitPage + 1 <= pageCount) pagesToUpdate.add(hitPage + 1);
+          }
           if (layout.leftPage !== null) pagesToUpdate.add(layout.leftPage);
           if (layout.rightPage !== null) pagesToUpdate.add(layout.rightPage);
         }
@@ -1262,7 +1446,7 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
           }
         }
       },
-      [eraserRadiusPx, spreadMode, layout, getLayerStrokes, activeLayer, commitLayerStrokes],
+      [eraserRadiusPx, spreadMode, layout, pageCount, getLayerStrokes, activeLayer, commitLayerStrokes],
     );
 
     const eraseAtPoint = useCallback(
@@ -1331,6 +1515,8 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
           rawBookPoints: initialPoints,
           holdAnchorClient: { x: clientX, y: clientY },
           snappedShape: null as SnappedShape | null,
+          snapBasisW: bookW,
+          snapBasisH: bookH,
         };
         draftSessionRef.current = session;
         setDraftStrokesByPage(buildDraftByPage(initialPoints, session));
@@ -1346,6 +1532,8 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
         markerSizeIndex,
         markerColor,
         penColor,
+        bookW,
+        bookH,
         buildDraftByPage,
       ],
     );
@@ -1376,13 +1564,15 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
           const last = samples[samples.length - 1];
           const pt = resolveBookPoint(last.clientX, last.clientY, true);
           if (!pt) return;
+          const basisW = session.snapBasisW || bookW;
+          const basisH = session.snapBasisH || bookH;
           const updatedShape = updateSnappedShape(
             session.snappedShape,
-            pt.bx * bookW,
-            pt.by * bookH,
+            pt.bx * basisW,
+            pt.by * basisH,
           );
           session.snappedShape = updatedShape;
-          const snappedBookPoints = sampleShapeToBookPoints(updatedShape, bookW, bookH);
+          const snappedBookPoints = sampleShapeToBookPoints(updatedShape, basisW, basisH);
           setDraftStrokesByPage(buildDraftByPage(snappedBookPoints, session, updatedShape.kind));
           return;
         }
@@ -1470,7 +1660,11 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
       if (!session) return;
 
       const finalBookPoints = session.snappedShape
-        ? sampleShapeToBookPoints(session.snappedShape, bookW, bookH)
+        ? sampleShapeToBookPoints(
+            session.snappedShape,
+            session.snapBasisW || bookW,
+            session.snapBasisH || bookH,
+          )
         : session.rawBookPoints;
       const shapeKind = session.snappedShape?.kind;
 
@@ -1534,10 +1728,11 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
     const handleFlipStart = useCallback(
       (clientX: number) => {
         if (flipSessionRef.current) return;
+        clearZoomTiles();
         flipDragStartXRef.current = clientX;
         flipDirLockedRef.current = null;
       },
-      [],
+      [clearZoomTiles],
     );
 
     const handleFlipMove = useCallback(
@@ -1862,8 +2057,13 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         ? undefined
                         : getDraftsForPage(layout.leftPage)
                     }
-                    hideInk={false}
+                    hideInk={allInkHidden}
                     renderScale={1}
+                    zoomTile={
+                      isFlipping || layout.leftPage === null
+                        ? null
+                        : zoomTilesByPage[layout.leftPage] ?? null
+                    }
                   />
                   <div className="absolute inset-0 spine-shadow-left pointer-events-none" />
                   {flipSession?.mode === 'double' && flipSession.leafSide === 'left' && (
@@ -1897,8 +2097,13 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         ? undefined
                         : getDraftsForPage(layout.rightPage)
                     }
-                    hideInk={false}
+                    hideInk={allInkHidden}
                     renderScale={1}
+                    zoomTile={
+                      isFlipping || layout.rightPage === null
+                        ? null
+                        : zoomTilesByPage[layout.rightPage] ?? null
+                    }
                   />
                   <div className="absolute inset-0 spine-shadow-right pointer-events-none" />
                   {flipSession?.mode === 'double' && flipSession.leafSide === 'right' && (
@@ -1933,8 +2138,9 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         width={scaledPageW}
                         height={scaledPageH}
                         strokes={getStrokesForPage(flipSession.leafFront)}
-                        hideInk={false}
+                        hideInk={allInkHidden}
                         renderScale={1}
+                        freezeRender={true}
                       />
                       <div
                         className={`absolute inset-0 pointer-events-none ${
@@ -1969,8 +2175,9 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         width={scaledPageW}
                         height={scaledPageH}
                         strokes={getStrokesForPage(flipSession.leafBack)}
-                        hideInk={false}
+                        hideInk={allInkHidden}
                         renderScale={1}
+                        freezeRender={true}
                       />
                       <div
                         className={`absolute inset-0 pointer-events-none ${
@@ -2010,8 +2217,13 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         ? undefined
                         : getDraftsForPage(layout.leftPage)
                     }
-                    hideInk={false}
+                    hideInk={allInkHidden}
                     renderScale={1}
+                    zoomTile={
+                      isFlipping || layout.leftPage === null
+                        ? null
+                        : zoomTilesByPage[layout.leftPage] ?? null
+                    }
                     className="rounded-lg"
                   />
                   <div
@@ -2045,8 +2257,9 @@ export const FlipBookViewer = forwardRef<FlipBookViewerHandle, FlipBookViewerPro
                         width={scaledPageW}
                         height={scaledPageH}
                         strokes={getStrokesForPage(flipSession.leafPage)}
-                        hideInk={false}
+                        hideInk={allInkHidden}
                         renderScale={1}
+                        freezeRender={true}
                         className="rounded-lg"
                       />
                       <div

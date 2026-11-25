@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type DragEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   AlertCircle,
@@ -269,6 +269,17 @@ export function HomePage() {
     }
   };
 
+  useEffect(() => {
+    if (!isDraggingPage) return;
+    const clearDrag = () => setIsDraggingPage(false);
+    window.addEventListener('dragend', clearDrag);
+    window.addEventListener('drop', clearDrag);
+    return () => {
+      window.removeEventListener('dragend', clearDrag);
+      window.removeEventListener('drop', clearDrag);
+    };
+  }, [isDraggingPage]);
+
   const handlePageDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDraggingPage(false);
@@ -286,8 +297,11 @@ export function HomePage() {
         setIsDraggingPage(true);
       }}
       onDragLeave={(e) => {
-        if (e.currentTarget === e.target) setIsDraggingPage(false);
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+          setIsDraggingPage(false);
+        }
       }}
+      onDragEnd={() => setIsDraggingPage(false)}
       onDrop={handlePageDrop}
       className="min-h-screen bg-base-200 text-base-content flex flex-col"
     >
@@ -305,20 +319,20 @@ export function HomePage() {
             <button
               type="button"
               onClick={handleExportBackup}
-              className="btn btn-ghost btn-sm hidden sm:inline-flex gap-1.5 font-normal text-xs border border-base-300"
+              className="btn btn-ghost btn-sm inline-flex gap-1.5 font-normal text-xs border border-base-300"
               title="記録・単元・手書きの軽量バックアップを書き出す"
             >
               <Download className="w-3.5 h-3.5" />
-              書き出し
+              <span className="hidden sm:inline">書き出し</span>
             </button>
             <button
               type="button"
               onClick={() => backupFileRef.current?.click()}
-              className="btn btn-ghost btn-sm hidden sm:inline-flex gap-1.5 font-normal text-xs border border-base-300"
+              className="btn btn-ghost btn-sm inline-flex gap-1.5 font-normal text-xs border border-base-300"
               title="バックアップJSONから記録を復元"
             >
               <Upload className="w-3.5 h-3.5" />
-              復元
+              <span className="hidden sm:inline">復元</span>
             </button>
             <input
               ref={backupFileRef}

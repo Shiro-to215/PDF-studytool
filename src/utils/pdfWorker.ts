@@ -10,4 +10,16 @@ export function ensurePdfWorker(): void {
   }
 }
 
+export function getPdfDocumentOptions(data: Uint8Array) {
+  ensurePdfWorker();
+  const baseHref =
+    typeof window !== 'undefined' ? new URL('./', window.location.href).href : './';
+  return {
+    data,
+    cMapUrl: `${baseHref}pdfjs/cmaps/`,
+    cMapPacked: true,
+    standardFontDataUrl: `${baseHref}pdfjs/standard_fonts/`,
+  };
+}
+
 export { pdfjsLib };

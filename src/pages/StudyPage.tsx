@@ -62,6 +62,7 @@ export function StudyPage({ workbookId }: StudyPageProps) {
     sidebarOpen,
     pageNavSeq,
     setSpreadMode,
+    setPageCount,
     setBindingDirection,
     setCoverSinglePage,
     setTocUnitId,
@@ -178,17 +179,20 @@ export function StudyPage({ workbookId }: StudyPageProps) {
     setActiveLayer(activeRound);
   }, [workbook?.id, activeRound, setActiveLayer]);
 
-  // Keep viewer display settings synced when updated via WorkbookSettingsModal
+  // Keep viewer display settings & pageCount synced when updated via WorkbookSettingsModal or PDF relink
   useEffect(() => {
     if (!workbook) return;
+    setPageCount(workbook.pageCount);
     setBindingDirection(workbook.bindingDirection);
     setCoverSinglePage(workbook.coverSinglePage);
     setSpreadMode(workbook.defaultSpread);
   }, [
     workbook?.id,
+    workbook?.pageCount,
     workbook?.bindingDirection,
     workbook?.coverSinglePage,
     workbook?.defaultSpread,
+    setPageCount,
     setBindingDirection,
     setCoverSinglePage,
     setSpreadMode,

@@ -41,6 +41,27 @@ function snapshotTouchesVisible(
   return false;
 }
 
+function findLastIndexTouchingVisible(
+  list: PageStrokesSnapshot[],
+  visiblePages: number[],
+): number {
+  if (list.length === 0 || visiblePages.length === 0) return -1;
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (snapshotTouchesVisible(list[i], visiblePages)) return i;
+  }
+  return -1;
+}
+
+function snapshotSharesAnyPage(
+  a: PageStrokesSnapshot,
+  b: PageStrokesSnapshot,
+): boolean {
+  for (const key of Object.keys(b)) {
+    if (key in a) return true;
+  }
+  return false;
+}
+
 interface ToolStore {
   interactionMode: InteractionMode;
   tool: DrawingTool;
@@ -124,11 +145,14 @@ export const useToolStore = create<ToolStore>((set, get) => ({
   pushHistory: (key, previousByPage) =>
     set((s) => {
       const bucket = s.historyByKey[key] ?? { past: [], future: [] };
-      const nextPast = [...bucket.past, previousByPage].slice(-40);
+      const nextPast = [...bucket.past, previousByPage].slice(-80);
+      const nextFuture = bucket.future.filter(
+        (snap) => !snapshotSharesAnyPage(previousByPage, snap),
+      );
       return {
         historyByKey: {
           ...s.historyByKey,
-          [key]: { past: nextPast, future: [] },
+          [key]: { past: nextPast, future: nextFuture },
         },
       };
     }),
@@ -136,8 +160,9 @@ export const useToolStore = create<ToolStore>((set, get) => ({
   popUndo: (key, visiblePages, getCurrent) => {
     const bucket = get().historyByKey[key];
     if (!bucket || bucket.past.length === 0) return null;
-    const restored = bucket.past[bucket.past.length - 1];
-    if (!snapshotTouchesVisible(restored, visiblePages)) return null;
+    const idx = findLastIndexTouchingVisible(bucket.past, visiblePages);
+    if (idx < 0) return null;
+    const restored = bucket.past[idx];
 
     const currentSnap: PageStrokesSnapshot = {};
     for (const pStr of Object.keys(restored)) {
@@ -145,8 +170,8 @@ export const useToolStore = create<ToolStore>((set, get) => ({
       currentSnap[pageNum] = getCurrent(pageNum);
     }
 
-    const nextPast = bucket.past.slice(0, -1);
-    const nextFuture = [...bucket.future, currentSnap].slice(-40);
+    const nextPast = [...bucket.past.slice(0, idx), ...bucket.past.slice(idx + 1)];
+    const nextFuture = [...bucket.future, currentSnap].slice(-80);
     set((s) => ({
       historyByKey: {
         ...s.historyByKey,
@@ -159,8 +184,9 @@ export const useToolStore = create<ToolStore>((set, get) => ({
   popRedo: (key, visiblePages, getCurrent) => {
     const bucket = get().historyByKey[key];
     if (!bucket || bucket.future.length === 0) return null;
-    const restored = bucket.future[bucket.future.length - 1];
-    if (!snapshotTouchesVisible(restored, visiblePages)) return null;
+    const idx = findLastIndexTouchingVisible(bucket.future, visiblePages);
+    if (idx < 0) return null;
+    const restored = bucket.future[idx];
 
     const currentSnap: PageStrokesSnapshot = {};
     for (const pStr of Object.keys(restored)) {
@@ -168,8 +194,8 @@ export const useToolStore = create<ToolStore>((set, get) => ({
       currentSnap[pageNum] = getCurrent(pageNum);
     }
 
-    const nextFuture = bucket.future.slice(0, -1);
-    const nextPast = [...bucket.past, currentSnap].slice(-40);
+    const nextFuture = [...bucket.future.slice(0, idx), ...bucket.future.slice(idx + 1)];
+    const nextPast = [...bucket.past, currentSnap].slice(-80);
     set((s) => ({
       historyByKey: {
         ...s.historyByKey,
@@ -182,12 +208,12 @@ export const useToolStore = create<ToolStore>((set, get) => ({
   canUndo: (key, visiblePages) => {
     const bucket = get().historyByKey[key];
     if (!bucket || bucket.past.length === 0) return false;
-    return snapshotTouchesVisible(bucket.past[bucket.past.length - 1], visiblePages);
+    return findLastIndexTouchingVisible(bucket.past, visiblePages) >= 0;
   },
 
   canRedo: (key, visiblePages) => {
     const bucket = get().historyByKey[key];
     if (!bucket || bucket.future.length === 0) return false;
-    return snapshotTouchesVisible(bucket.future[bucket.future.length - 1], visiblePages);
+    return findLastIndexTouchingVisible(bucket.future, visiblePages) >= 0;
   },
 }));

@@ -1,12 +1,5 @@
 import { createId, db } from './database';
-import type {
-  AnswerEntry,
-  PageState,
-  PageStrokes,
-  Problem,
-  UnitNode,
-  Workbook,
-} from '../types/models';
+import { DEFAULT_MISS_REASONS, type AnswerEntry, type PageState, type PageStrokes, type Problem, type UnitNode, type Workbook } from '../types/models';
 import { parseJsonAnswerField } from '../utils/answerFormat';
 
 export interface ParsedImportRow {
@@ -197,18 +190,24 @@ export async function importProblemsToWorkbook(
     siblingOrderMap.set(parentKey, Math.max(siblingOrderMap.get(parentKey) ?? -1, u.order));
   }
 
-  // Match existing problem by `${unitId ?? 'NONE'}::${numberLabel}` or `PAGE:${pageNumber}::${numberLabel}`
+  // Match existing problem by `${unitId ?? 'NONE'}::${numberLabel}` or unambiguous `${pageNumber}::${numberLabel}`
   const problemByUnitAndNum = new Map<string, Problem>();
-  const problemByPageAndNum = new Map<string, Problem>();
+  const problemByPageAndNum = new Map<string, Problem | null>();
   let maxProblemOrder = existingProblems.reduce((m, p) => Math.max(m, p.order), -1);
 
   for (const p of existingProblems) {
     problemByUnitAndNum.set(`${p.unitId ?? 'NONE'}::${p.numberLabel}`, p);
-    problemByPageAndNum.set(`${p.pageNumber}::${p.numberLabel}`, p);
+    const pageKey = `${p.pageNumber}::${p.numberLabel}`;
+    if (problemByPageAndNum.has(pageKey)) {
+      problemByPageAndNum.set(pageKey, null);
+    } else {
+      problemByPageAndNum.set(pageKey, p);
+    }
   }
 
   const newUnits: UnitNode[] = [];
   const upsertProblemsList: Problem[] = [];
+  const finalProblemsById = new Map<string, Problem>(existingProblems.map((p) => [p.id, p]));
   let problemsCreated = 0;
   let problemsUpdated = 0;
   const now = Date.now();
@@ -241,9 +240,10 @@ export async function importProblemsToWorkbook(
     }
 
     const unitId = parentId;
+    const pageFallback = problemByPageAndNum.get(`${row.page}::${row.problemNumber}`) ?? undefined;
     const match =
       problemByUnitAndNum.get(`${unitId ?? 'NONE'}::${row.problemNumber}`) ??
-      problemByPageAndNum.get(`${row.page}::${row.problemNumber}`);
+      (unitId === null ? pageFallback : pageFallback);
 
     if (match) {
       const hasNewAnswer = Boolean(row.answer) || Boolean(row.answerEntries?.length);
@@ -257,8 +257,12 @@ export async function importProblemsToWorkbook(
         updatedAt: now,
       };
       upsertProblemsList.push(updated);
+      finalProblemsById.set(updated.id, updated);
       problemByUnitAndNum.set(`${unitId ?? 'NONE'}::${row.problemNumber}`, updated);
-      problemByPageAndNum.set(`${row.page}::${row.problemNumber}`, updated);
+      const pageKey = `${row.page}::${row.problemNumber}`;
+      if (problemByPageAndNum.get(pageKey) !== null) {
+        problemByPageAndNum.set(pageKey, updated);
+      }
       problemsUpdated++;
     } else {
       maxProblemOrder += 1;
@@ -279,13 +283,38 @@ export async function importProblemsToWorkbook(
         updatedAt: now,
       };
       upsertProblemsList.push(created);
+      finalProblemsById.set(created.id, created);
       problemByUnitAndNum.set(`${unitId ?? 'NONE'}::${row.problemNumber}`, created);
-      problemByPageAndNum.set(`${row.page}::${row.problemNumber}`, created);
+      const pageKey = `${row.page}::${row.problemNumber}`;
+      problemByPageAndNum.set(pageKey, problemByPageAndNum.has(pageKey) ? null : created);
       problemsCreated++;
     }
   }
 
+  // Prune existing unit folders that no longer hold any problems (directly or via descendants)
+  const allUnitsById = new Map<string, UnitNode>();
+  for (const u of existingUnits) allUnitsById.set(u.id, u);
+  for (const u of newUnits) allUnitsById.set(u.id, u);
+
+  const keptUnitIds = new Set<string>();
+  for (const p of finalProblemsById.values()) {
+    let cursor = p.unitId;
+    const guard = new Set<string>();
+    while (cursor && !guard.has(cursor) && !keptUnitIds.has(cursor)) {
+      guard.add(cursor);
+      keptUnitIds.add(cursor);
+      cursor = allUnitsById.get(cursor)?.parentId ?? null;
+    }
+  }
+
+  const orphanUnitIds = existingUnits
+    .filter((u) => !keptUnitIds.has(u.id))
+    .map((u) => u.id);
+
   await db.transaction('rw', [db.unitNodes, db.problems, db.workbooks], async () => {
+    if (orphanUnitIds.length > 0) {
+      await db.unitNodes.bulkDelete(orphanUnitIds);
+    }
     if (newUnits.length > 0) {
       await db.unitNodes.bulkPut(newUnits);
     }
@@ -348,29 +377,102 @@ export async function importBackupJson(jsonText: string): Promise<{
 
   const existingWorkbooks = await db.workbooks.toArray();
   const idMap = new Map<string, string>();
+  const matchedTargetIds = new Set<string>();
+  const workbooksToPut: Workbook[] = [];
+  const now = Date.now();
   let restoredWorkbooks = 0;
 
   for (const bWb of parsed.workbooks) {
+    if (!bWb || !bWb.id) continue;
     const byId = existingWorkbooks.find((w) => w.id === bWb.id);
     const byTitle = existingWorkbooks.find((w) => w.title === bWb.title);
     const target = byId ?? byTitle;
+
     if (target) {
       idMap.set(bWb.id, target.id);
-      await db.workbooks.update(target.id, {
-        bindingDirection: bWb.bindingDirection,
-        defaultSpread: bWb.defaultSpread,
-        coverSinglePage: bWb.coverSinglePage,
-        layers: Array.from(new Set([...target.layers, ...(bWb.layers ?? [])])),
-        ...(bWb.activeLayer ? { activeLayer: bWb.activeLayer } : {}),
+      matchedTargetIds.add(target.id);
+      const nextLayers = bWb.layers && bWb.layers.length > 0 ? bWb.layers : target.layers;
+      const clampedLastPage = Math.max(
+        1,
+        Math.min(target.pageCount || bWb.pageCount || 1, bWb.lastPage || 1),
+      );
+      workbooksToPut.push({
+        ...target,
+        bindingDirection: bWb.bindingDirection ?? target.bindingDirection,
+        defaultSpread: bWb.defaultSpread ?? target.defaultSpread,
+        coverSinglePage: bWb.coverSinglePage ?? target.coverSinglePage,
+        layers: nextLayers,
+        ...(bWb.activeLayer && nextLayers.includes(bWb.activeLayer)
+          ? { activeLayer: bWb.activeLayer }
+          : {}),
         customReasons: Array.from(new Set([...target.customReasons, ...(bWb.customReasons ?? [])])),
         ...(bWb.missReasonOptions !== undefined
           ? { missReasonOptions: bWb.missReasonOptions }
           : {}),
-        lastPage: bWb.lastPage,
+        lastPage: clampedLastPage,
+        updatedAt: now,
+      });
+      restoredWorkbooks++;
+    } else {
+      const targetId = bWb.id || createId();
+      idMap.set(bWb.id, targetId);
+      const nextLayers = bWb.layers && bWb.layers.length > 0 ? bWb.layers : ['1周目'];
+      const pageCount = Math.max(1, bWb.pageCount || 1);
+      workbooksToPut.push({
+        id: targetId,
+        title: bWb.title || '無題のワーク',
+        pageCount,
+        bindingDirection: bWb.bindingDirection ?? 'ltr',
+        defaultSpread: bWb.defaultSpread ?? 'double',
+        coverSinglePage: bWb.coverSinglePage ?? false,
+        layers: nextLayers,
+        activeLayer:
+          bWb.activeLayer && nextLayers.includes(bWb.activeLayer)
+            ? bWb.activeLayer
+            : nextLayers[0],
+        customReasons: bWb.customReasons ?? [],
+        missReasonOptions: bWb.missReasonOptions ?? [...DEFAULT_MISS_REASONS],
+        lastPage: Math.max(1, Math.min(pageCount, bWb.lastPage || 1)),
+        createdAt: bWb.createdAt || now,
+        updatedAt: now,
       });
       restoredWorkbooks++;
     }
   }
+
+  // Generate fresh UnitNode / Problem IDs when mapping to a different existing workbook ID
+  // so two workbooks can never collide on Dexie primary keys.
+  const unitIdMapByWb = new Map<string, Map<string, string>>();
+  const getUnitIdMap = (wbId: string) => {
+    let m = unitIdMapByWb.get(wbId);
+    if (!m) {
+      m = new Map<string, string>();
+      unitIdMapByWb.set(wbId, m);
+    }
+    return m;
+  };
+
+  const rawUnits = (parsed.unitNodes ?? []).filter((u) => idMap.has(u.workbookId));
+  for (const u of rawUnits) {
+    const wbId = idMap.get(u.workbookId)!;
+    if (u.workbookId !== wbId) {
+      getUnitIdMap(wbId).set(u.id, createId());
+    }
+  }
+
+  const unitsToPut: UnitNode[] = rawUnits.map((u) => {
+    const wbId = idMap.get(u.workbookId)!;
+    if (u.workbookId === wbId) {
+      return { ...u, workbookId: wbId };
+    }
+    const uMap = getUnitIdMap(wbId);
+    return {
+      ...u,
+      id: uMap.get(u.id) ?? createId(),
+      parentId: u.parentId ? uMap.get(u.parentId) ?? null : null,
+      workbookId: wbId,
+    };
+  });
 
   const statesToPut: PageState[] = (parsed.pageStates ?? [])
     .filter((s) => idMap.has(s.workbookId))
@@ -379,13 +481,21 @@ export async function importBackupJson(jsonText: string): Promise<{
       return { ...s, workbookId: wbId, id: `${wbId}:${s.pageNumber}` };
     });
 
-  const unitsToPut: UnitNode[] = (parsed.unitNodes ?? [])
-    .filter((u) => idMap.has(u.workbookId))
-    .map((u) => ({ ...u, workbookId: idMap.get(u.workbookId)! }));
-
   const problemsToPut: Problem[] = (parsed.problems ?? [])
     .filter((p) => idMap.has(p.workbookId))
-    .map((p) => ({ ...p, workbookId: idMap.get(p.workbookId)! }));
+    .map((p) => {
+      const wbId = idMap.get(p.workbookId)!;
+      if (p.workbookId === wbId) {
+        return { ...p, workbookId: wbId };
+      }
+      const uMap = getUnitIdMap(wbId);
+      return {
+        ...p,
+        id: createId(),
+        unitId: p.unitId ? uMap.get(p.unitId) ?? null : null,
+        workbookId: wbId,
+      };
+    });
 
   const strokesToPut: PageStrokes[] = (parsed.pageStrokes ?? [])
     .filter((st) => idMap.has(st.workbookId))
@@ -396,8 +506,15 @@ export async function importBackupJson(jsonText: string): Promise<{
 
   await db.transaction(
     'rw',
-    [db.pageStates, db.unitNodes, db.problems, db.pageStrokes],
+    [db.workbooks, db.pageStates, db.unitNodes, db.problems, db.pageStrokes],
     async () => {
+      for (const targetId of matchedTargetIds) {
+        await db.pageStates.where('workbookId').equals(targetId).delete();
+        await db.unitNodes.where('workbookId').equals(targetId).delete();
+        await db.problems.where('workbookId').equals(targetId).delete();
+        await db.pageStrokes.where('workbookId').equals(targetId).delete();
+      }
+      if (workbooksToPut.length) await db.workbooks.bulkPut(workbooksToPut);
       if (statesToPut.length) await db.pageStates.bulkPut(statesToPut);
       if (unitsToPut.length) await db.unitNodes.bulkPut(unitsToPut);
       if (problemsToPut.length) await db.problems.bulkPut(problemsToPut);
